@@ -2,21 +2,58 @@
 
 from __future__ import annotations
 
+import math
 from typing import Iterable
 
 
-def landmark_visible(landmark: object, threshold: float = 0.4) -> bool:
-    """Return True when a landmark has enough visibility confidence."""
+def landmark_visible(landmark: object, threshold: float = 0.25) -> bool:
+    """Return True when a landmark has enough visibility confidence.
+
+    Lowered from 0.4 to 0.25 for classroom settings where students are
+    farther from the camera and landmarks have lower visibility scores.
+    """
     visibility = float(getattr(landmark, "visibility", 1.0))
     presence = float(getattr(landmark, "presence", 1.0))
     return visibility >= threshold and presence >= threshold
 
 
+def _arm_angle(
+    shoulder: object,
+    elbow: object,
+    wrist: object,
+) -> float:
+    """Return the angle (in degrees) at the elbow formed by shoulder-elbow-wrist.
+
+    A small angle (< 90°) means the forearm is bent upward (hand near head).
+    A large angle (> 150°) means the arm is extended straight.
+    """
+    # Vectors: shoulder->elbow and wrist->elbow
+    se_x = shoulder.x - elbow.x
+    se_y = shoulder.y - elbow.y
+    we_x = wrist.x - elbow.x
+    we_y = wrist.y - elbow.y
+
+    dot = se_x * we_x + se_y * we_y
+    mag_se = math.sqrt(se_x ** 2 + se_y ** 2)
+    mag_we = math.sqrt(we_x ** 2 + we_y ** 2)
+
+    if mag_se < 1e-6 or mag_we < 1e-6:
+        return 0.0
+
+    cos_angle = max(-1.0, min(1.0, dot / (mag_se * mag_we)))
+    return math.degrees(math.acos(cos_angle))
+
+
 def is_hand_raised_from_landmarks(landmarks: Iterable[object]) -> bool:
-    """Apply a lightweight hand-raise rule to pose landmarks.
+    """Detect hand-raising using a multi-tier approach for classroom settings.
 
     Landmark indexes follow the official MediaPipe pose model:
     11/12 shoulders, 13/14 elbows, 15/16 wrists, 0 nose.
+
+    Three tiers, from strict to lenient:
+    1. High-confidence: wrist above shoulder + elbow near shoulder + wrist near nose
+    2. Angle-based: arm bent upward (angle < 120°) + wrist above shoulder
+    3. Fallback: wrist clearly above shoulder level, even with uncertain elbow
     """
 
     landmark_list = list(landmarks)
@@ -31,27 +68,53 @@ def is_hand_raised_from_landmarks(landmarks: Iterable[object]) -> bool:
     left_wrist = landmark_list[15]
     right_wrist = landmark_list[16]
 
-    left_ready = all(
-        landmark_visible(point)
-        for point in (nose, left_shoulder, left_elbow, left_wrist)
-    )
-    right_ready = all(
-        landmark_visible(point)
-        for point in (nose, right_shoulder, right_elbow, right_wrist)
+    return _is_arm_raised(
+        nose, left_shoulder, left_elbow, left_wrist
+    ) or _is_arm_raised(
+        nose, right_shoulder, right_elbow, right_wrist
     )
 
-    left_raised = left_ready and (
-        left_wrist.y < left_shoulder.y - 0.03
-        and left_elbow.y < left_shoulder.y + 0.02
-        and left_wrist.y < nose.y + 0.05
+
+def _is_arm_raised(
+    nose: object,
+    shoulder: object,
+    elbow: object,
+    wrist: object,
+) -> bool:
+    """Multi-tier hand-raise check for a single arm."""
+
+    # All four key landmarks should be minimally visible
+    if not all(landmark_visible(pt) for pt in (nose, shoulder, elbow, wrist)):
+        return False
+
+    # --- Tier 1: High-confidence geometric check (relaxed from original) ---
+    # Wrist is above shoulder, elbow is not too low, wrist is near or above nose
+    tier1 = (
+        wrist.y < shoulder.y
+        and elbow.y < shoulder.y + 0.08
+        and wrist.y < nose.y + 0.12
     )
-    right_raised = right_ready and (
-        right_wrist.y < right_shoulder.y - 0.03
-        and right_elbow.y < right_shoulder.y + 0.02
-        and right_wrist.y < nose.y + 0.05
+    if tier1:
+        return True
+
+    # --- Tier 2: Angle-based check ---
+    # Arm is bent upward (elbow angle < 120°) and wrist is above shoulder level
+    angle = _arm_angle(shoulder, elbow, wrist)
+    tier2 = (
+        angle < 120.0
+        and wrist.y < shoulder.y + 0.05
+    )
+    if tier2:
+        return True
+
+    # --- Tier 3: Fallback — wrist clearly above shoulder ---
+    # Even if elbow is uncertain, a wrist well above shoulder is a strong signal
+    tier3 = (
+        wrist.y < shoulder.y - 0.02
+        and wrist.y < nose.y + 0.15
     )
 
-    return left_raised or right_raised
+    return tier3
 
 
 def is_head_down_from_landmarks(landmarks: Iterable[object]) -> bool:

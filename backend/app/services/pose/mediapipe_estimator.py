@@ -55,9 +55,9 @@ class MediaPipePoseEstimator:
             base_options=base_options,
             running_mode=mp.tasks.vision.RunningMode.IMAGE,
             num_poses=1,
-            min_pose_detection_confidence=0.5,
-            min_pose_presence_confidence=0.5,
-            min_tracking_confidence=0.5,
+            min_pose_detection_confidence=0.4,
+            min_pose_presence_confidence=0.4,
+            min_tracking_confidence=0.35,
         )
         try:
             return mp.tasks.vision.PoseLandmarker.create_from_options(options)
