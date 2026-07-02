@@ -1,0 +1,1 @@
+# Frontend start script placeholder.
