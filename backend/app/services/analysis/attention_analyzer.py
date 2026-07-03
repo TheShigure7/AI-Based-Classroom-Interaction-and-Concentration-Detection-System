@@ -29,13 +29,22 @@ class AttentionAnalyzer:
         """Update a student's attention score using current per-frame states."""
         score = student.attention_score
 
-        if student.head_down:
+        if student.sleeping:
+            score -= 1.2
+        elif student.head_down:
             score -= 0.35
         if student.phone_risk:
             score -= 0.9
+        if student.talking_risk:
+            score -= 0.45
         if student.hand_raised:
             score += 0.2
-        if not student.head_down and not student.phone_risk:
+        if (
+            not student.head_down
+            and not student.phone_risk
+            and not student.sleeping
+            and not student.talking_risk
+        ):
             score += 0.12
 
         student.attention_score = max(0.0, min(100.0, score))

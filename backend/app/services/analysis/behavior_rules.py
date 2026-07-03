@@ -172,3 +172,119 @@ def is_phone_risk(
     )
 
     return inside_person or near_lower_body
+
+
+def is_sleeping_posture_from_landmarks(landmarks: Iterable[object]) -> bool:
+    """Return whether posture looks closer to sleeping than brief head-down behavior."""
+
+    landmark_list = list(landmarks)
+    if len(landmark_list) < 13:
+        return False
+
+    nose = landmark_list[0]
+    left_shoulder = landmark_list[11]
+    right_shoulder = landmark_list[12]
+
+    if not all(landmark_visible(point) for point in (nose, left_shoulder, right_shoulder)):
+        return False
+
+    shoulder_center_y = (left_shoulder.y + right_shoulder.y) / 2.0
+    shoulder_span = abs(left_shoulder.x - right_shoulder.x)
+    if shoulder_span < 0.08:
+        return False
+
+    nose_to_shoulder_gap = shoulder_center_y - nose.y
+    shoulder_tilt = abs(left_shoulder.y - right_shoulder.y)
+    return nose_to_shoulder_gap < 0.08 and shoulder_tilt < 0.08
+
+
+def extract_sleep_signature(landmarks: Iterable[object]) -> tuple[float, ...] | None:
+    """Return a compact upper-body signature used for motion smoothing."""
+
+    landmark_list = list(landmarks)
+    if len(landmark_list) < 13:
+        return None
+
+    nose = landmark_list[0]
+    left_shoulder = landmark_list[11]
+    right_shoulder = landmark_list[12]
+    if not all(landmark_visible(point) for point in (nose, left_shoulder, right_shoulder)):
+        return None
+
+    return (
+        float(nose.x),
+        float(nose.y),
+        float(left_shoulder.x),
+        float(left_shoulder.y),
+        float(right_shoulder.x),
+        float(right_shoulder.y),
+    )
+
+
+def calculate_motion_delta(
+    previous_signature: tuple[float, ...] | None,
+    current_signature: tuple[float, ...] | None,
+) -> float:
+    """Return average absolute motion between two compact signatures."""
+
+    if previous_signature is None or current_signature is None:
+        return 1.0
+
+    deltas = [
+        abs(current_value - previous_value)
+        for previous_value, current_value in zip(previous_signature, current_signature)
+    ]
+    return sum(deltas) / len(deltas)
+
+
+def head_turn_direction_from_landmarks(landmarks: Iterable[object]) -> int:
+    """Estimate coarse head turn direction from nose offset against shoulder center.
+
+    Returns:
+    -1: turned left
+     0: no strong side turn
+     1: turned right
+    """
+
+    landmark_list = list(landmarks)
+    if len(landmark_list) < 13:
+        return 0
+
+    nose = landmark_list[0]
+    left_shoulder = landmark_list[11]
+    right_shoulder = landmark_list[12]
+    if not all(landmark_visible(point) for point in (nose, left_shoulder, right_shoulder)):
+        return 0
+
+    shoulder_center_x = (left_shoulder.x + right_shoulder.x) / 2.0
+    shoulder_span = abs(left_shoulder.x - right_shoulder.x)
+    if shoulder_span < 0.08:
+        return 0
+
+    turn_ratio = (nose.x - shoulder_center_x) / shoulder_span
+    if turn_ratio > 0.18:
+        return 1
+    if turn_ratio < -0.18:
+        return -1
+    return 0
+
+
+def are_students_close_for_talking(
+    bbox_a: tuple[int, int, int, int],
+    bbox_b: tuple[int, int, int, int],
+) -> bool:
+    """Return whether two detected students are close enough for a talking interaction."""
+
+    ax1, ay1, ax2, ay2 = bbox_a
+    bx1, by1, bx2, by2 = bbox_b
+    a_center_x = (ax1 + ax2) / 2.0
+    b_center_x = (bx1 + bx2) / 2.0
+    a_center_y = (ay1 + ay2) / 2.0
+    b_center_y = (by1 + by2) / 2.0
+
+    avg_width = ((ax2 - ax1) + (bx2 - bx1)) / 2.0
+    avg_height = ((ay2 - ay1) + (by2 - by1)) / 2.0
+    horizontal_distance = abs(a_center_x - b_center_x)
+    vertical_distance = abs(a_center_y - b_center_y)
+
+    return horizontal_distance <= avg_width * 1.6 and vertical_distance <= avg_height * 0.45

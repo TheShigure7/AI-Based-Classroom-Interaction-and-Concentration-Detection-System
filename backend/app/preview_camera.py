@@ -128,12 +128,15 @@ def inference_loop(
         person_detections = [d for d in detections if d.label == "person"]
         phone_detections = [d for d in detections if d.label == "cell phone"]
         track_assignments = student_tracker.update([d.bbox for d in person_detections])
+        pose_estimates: dict[int, object | None] = {}
 
         for index, detection in enumerate(person_detections):
             tracked_student = track_assignments[index]
             pose_estimate = pose_estimator.estimate_person_pose(frame_copy, detection.bbox)
+            pose_estimates[index] = pose_estimate
             behavior_state = behavior_engine.analyze_person(
                 detection,
+                tracked_student,
                 phone_detections,
                 pose_estimate,
             )
@@ -142,6 +145,20 @@ def inference_loop(
                 tracked_student,
                 behavior_state,
             )
+
+        talking_track_ids = behavior_engine.analyze_scene_talking(
+            person_detections,
+            track_assignments,
+            pose_estimates,
+        )
+        behavior_engine.apply_talking_states(
+            person_detections,
+            track_assignments,
+            talking_track_ids,
+        )
+
+        for index, detection in enumerate(person_detections):
+            tracked_student = track_assignments[index]
             detection.attention_score = attention_analyzer.update_attention_score(tracked_student)
 
         _assign_display_ids(person_detections)
@@ -223,7 +240,7 @@ def main() -> None:
             cv2.putText(
                 output,
                 f"Attention avg: {attention_summary.average_score}",
-                (20, 205),
+                (20, 275),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.8,
                 (0, 255, 0),
@@ -233,7 +250,7 @@ def main() -> None:
             cv2.putText(
                 output,
                 f"Low attention: {attention_summary.low_attention_count}",
-                (20, 240),
+                (20, 310),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.8,
                 (0, 215, 255),

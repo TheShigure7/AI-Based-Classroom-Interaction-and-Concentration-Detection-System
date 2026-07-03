@@ -20,6 +20,8 @@ class DetectionResult:
     hand_raised: bool = False
     head_down: bool = False
     phone_risk: bool = False
+    sleeping: bool = False
+    talking_risk: bool = False
 
 
 class YoloDetector:
@@ -117,39 +119,8 @@ class YoloDetector:
                 2,
                 cv2.LINE_AA,
             )
-            if detection.label == "person" and detection.hand_raised:
-                cv2.putText(
-                    output,
-                    "hand raised",
-                    (x1, min(y2 + 25, output.shape[0] - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (255, 255, 0),
-                    2,
-                    cv2.LINE_AA,
-                )
-            if detection.label == "person" and detection.head_down:
-                cv2.putText(
-                    output,
-                    "head down",
-                    (x1, min(y2 + 50, output.shape[0] - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 0, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-            if detection.label == "person" and detection.phone_risk:
-                cv2.putText(
-                    output,
-                    "phone risk",
-                    (x1, min(y2 + 75, output.shape[0] - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 140, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
+            if detection.label == "person":
+                self._draw_person_statuses(output, detection)
 
         cv2.putText(
             output,
@@ -210,6 +181,32 @@ class YoloDetector:
             2,
             cv2.LINE_AA,
         )
+        sleeping_count = sum(
+            1 for detection in detections if detection.label == "person" and detection.sleeping
+        )
+        cv2.putText(
+            output,
+            f"Sleep risk: {sleeping_count}",
+            (20, 205),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (180, 105, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        talking_count = sum(
+            1 for detection in detections if detection.label == "person" and detection.talking_risk
+        )
+        cv2.putText(
+            output,
+            f"Talking risk: {talking_count}",
+            (20, 240),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 128, 255),
+            2,
+            cv2.LINE_AA,
+        )
         return output
 
     @staticmethod
@@ -227,8 +224,40 @@ class YoloDetector:
         """Resolve bbox color from current student state."""
         if detection.phone_risk:
             return (0, 0, 255)
+        if detection.sleeping:
+            return (180, 105, 255)
+        if detection.talking_risk:
+            return (0, 128, 255)
         if detection.head_down:
             return (0, 255, 255)
         if detection.hand_raised:
             return (255, 0, 0)
         return (0, 200, 0)
+
+    @staticmethod
+    def _draw_person_statuses(output: np.ndarray, detection: DetectionResult) -> None:
+        """Draw stacked status labels below one student bbox."""
+        statuses: list[tuple[str, tuple[int, int, int]]] = []
+        if detection.hand_raised:
+            statuses.append(("hand raised", (255, 255, 0)))
+        if detection.head_down:
+            statuses.append(("head down", (0, 0, 255)))
+        if detection.phone_risk:
+            statuses.append(("phone risk", (0, 140, 255)))
+        if detection.sleeping:
+            statuses.append(("sleep risk", (180, 105, 255)))
+        if detection.talking_risk:
+            statuses.append(("talking risk", (0, 128, 255)))
+
+        x1, _, _, y2 = detection.bbox
+        for index, (label, color) in enumerate(statuses, start=1):
+            cv2.putText(
+                output,
+                label,
+                (x1, min(y2 + 25 * index, output.shape[0] - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
