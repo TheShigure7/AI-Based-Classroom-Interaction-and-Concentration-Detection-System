@@ -19,8 +19,7 @@ import cv2
 import numpy as np
 
 from app.services.analysis.attention_analyzer import AttentionAnalyzer, AttentionSummary
-from app.services.analysis.hand_raise_analyzer import HandRaiseAnalyzer
-from app.services.analysis.phone_use_analyzer import PhoneUseAnalyzer
+from app.services.analysis.behavior_engine import BehaviorEngine
 from app.services.camera.capture import CameraConfig, CameraService
 from app.services.detection.yolo_detector import DetectionResult, YoloDetector
 from app.services.pose.mediapipe_estimator import MediaPipePoseEstimator
@@ -91,9 +90,8 @@ def inference_loop(
     state: SharedState,
     detector: YoloDetector,
     pose_estimator: MediaPipePoseEstimator,
-    hand_raise_analyzer: HandRaiseAnalyzer,
+    behavior_engine: BehaviorEngine,
     attention_analyzer: AttentionAnalyzer,
-    phone_use_analyzer: PhoneUseAnalyzer,
     student_tracker: StudentTracker,
 ) -> None:
     """Background thread: run heavy inference on the newest available frame."""
@@ -133,31 +131,17 @@ def inference_loop(
 
         for index, detection in enumerate(person_detections):
             tracked_student = track_assignments[index]
-            detection.attention_score = round(tracked_student.attention_score)
-
             pose_estimate = pose_estimator.estimate_person_pose(frame_copy, detection.bbox)
-            if pose_estimate is None:
-                tracked_student.hand_raised = False
-                tracked_student.head_down = False
-                tracked_student.phone_risk = False
-                detection.attention_score = attention_analyzer.update_attention_score(
-                    tracked_student
-                )
-                continue
-
-            detection.hand_raised = hand_raise_analyzer.analyze(pose_estimate.landmarks)
-            detection.head_down = attention_analyzer.is_head_down(pose_estimate.landmarks)
-            detection.phone_risk = any(
-                phone_use_analyzer.is_phone_risk(
-                    detection.bbox,
-                    phone_detection.bbox,
-                    detection.head_down,
-                )
-                for phone_detection in phone_detections
+            behavior_state = behavior_engine.analyze_person(
+                detection,
+                phone_detections,
+                pose_estimate,
             )
-            tracked_student.hand_raised = detection.hand_raised
-            tracked_student.head_down = detection.head_down
-            tracked_student.phone_risk = detection.phone_risk
+            behavior_engine.apply_behavior_state(
+                detection,
+                tracked_student,
+                behavior_state,
+            )
             detection.attention_score = attention_analyzer.update_attention_score(tracked_student)
 
         _assign_display_ids(person_detections)
@@ -190,9 +174,8 @@ def main() -> None:
     camera = CameraService(config=CameraConfig(source=stream_source))
     detector = YoloDetector()
     pose_estimator = MediaPipePoseEstimator()
-    hand_raise_analyzer = HandRaiseAnalyzer()
     attention_analyzer = AttentionAnalyzer()
-    phone_use_analyzer = PhoneUseAnalyzer()
+    behavior_engine = BehaviorEngine(attention_analyzer=attention_analyzer)
     student_tracker = StudentTracker()
 
     state = SharedState()
@@ -204,9 +187,8 @@ def main() -> None:
             state,
             detector,
             pose_estimator,
-            hand_raise_analyzer,
+            behavior_engine,
             attention_analyzer,
-            phone_use_analyzer,
             student_tracker,
         ),
         daemon=True,
