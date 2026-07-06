@@ -29,6 +29,7 @@ from app.models.schemas.realtime import (
     StudentStatesPayload,
     SummaryPayload,
 )
+from app.models.schemas.settings import SettingsPayload, UpdateSettingsRequest, VideoSourceOption
 from app.services.analysis.attention_analyzer import AttentionAnalyzer
 from app.services.analysis.behavior_engine import BehaviorEngine
 from app.services.camera.capture import CameraConfig, CameraService
@@ -78,6 +79,9 @@ class ClassroomRuntime:
         self._alerts: list[AlertRecord] = []
         self._alert_cooldowns: dict[tuple[str, str], float] = {}
         self._latest_frame_jpeg: bytes | None = None
+        self._settings = SettingsPayload(
+            recent_video_sources=[VideoSourceOption(label="本地摄像头", value="0")]
+        )
 
     def start_session(self, request: StartSessionRequest) -> SessionActionResponse:
         """Start a new runtime session if one is not already running."""
@@ -93,6 +97,9 @@ class ClassroomRuntime:
             self._video_source = request.video_source
             self._enable_pose_analysis = request.enable_pose_analysis
             self._save_alert_snapshots = request.save_alert_snapshots
+            self._settings.enable_pose_analysis = request.enable_pose_analysis
+            self._settings.save_alert_snapshots = request.save_alert_snapshots
+            self._remember_video_source_locked(request.video_source)
             self._started_at = datetime.now()
             self._stopped_at = None
             self._status = "running"
@@ -161,12 +168,47 @@ class ClassroomRuntime:
                 status=self._status,  # type: ignore[arg-type]
                 video_source=self._video_source,
                 duration_seconds=self._duration_seconds_locked(),
+                last_error=self._last_error,
                 resolution=self._resolution,
                 performance=self._performance,
                 summary=self._summary,
                 students=list(self._students),
                 latest_alerts=[self._serialize_alert(alert) for alert in self._alerts[:8]],
             )
+
+    def get_settings(self) -> SettingsPayload:
+        """Return lightweight frontend settings."""
+        with self._lock:
+            return self._settings.model_copy(deep=True)
+
+    def update_settings(self, request: UpdateSettingsRequest) -> SettingsPayload:
+        """Update lightweight frontend settings."""
+        with self._lock:
+            if request.local_camera_source is not None:
+                self._settings.local_camera_source = request.local_camera_source
+            if request.network_video_source is not None:
+                self._settings.network_video_source = request.network_video_source
+                if request.network_video_source.strip():
+                    self._remember_video_source_locked(request.network_video_source)
+            if request.enable_pose_analysis is not None:
+                self._settings.enable_pose_analysis = request.enable_pose_analysis
+            if request.enable_sleeping_detection is not None:
+                self._settings.enable_sleeping_detection = request.enable_sleeping_detection
+            if request.enable_talking_detection is not None:
+                self._settings.enable_talking_detection = request.enable_talking_detection
+            if request.low_attention_threshold is not None:
+                self._settings.low_attention_threshold = request.low_attention_threshold
+            if request.save_alert_snapshots is not None:
+                self._settings.save_alert_snapshots = request.save_alert_snapshots
+            if request.enable_realtime_alerts is not None:
+                self._settings.enable_realtime_alerts = request.enable_realtime_alerts
+            if request.enable_daily_summary is not None:
+                self._settings.enable_daily_summary = request.enable_daily_summary
+            if request.enable_email_summary is not None:
+                self._settings.enable_email_summary = request.enable_email_summary
+            if request.email_address is not None:
+                self._settings.email_address = request.email_address
+            return self._settings.model_copy(deep=True)
 
     def get_realtime_event(self) -> RealtimeEvent:
         """Return the current websocket event payload."""
@@ -427,6 +469,7 @@ class ClassroomRuntime:
             duration_seconds=self._duration_seconds_locked(),
             enable_pose_analysis=self._enable_pose_analysis,
             save_alert_snapshots=self._save_alert_snapshots,
+            last_error=self._last_error,
         )
 
     def _duration_seconds_locked(self) -> int:
@@ -563,3 +606,15 @@ class ClassroomRuntime:
     @staticmethod
     def _now_iso() -> str:
         return datetime.now().isoformat(timespec="seconds")
+
+    def _remember_video_source_locked(self, source: str) -> None:
+        normalized_source = source.strip()
+        if not normalized_source:
+            return
+
+        existing = [
+            option for option in self._settings.recent_video_sources if option.value != normalized_source
+        ]
+        label = "本地摄像头" if normalized_source == "0" else normalized_source
+        existing.insert(0, VideoSourceOption(label=label, value=normalized_source))
+        self._settings.recent_video_sources = existing[:8]

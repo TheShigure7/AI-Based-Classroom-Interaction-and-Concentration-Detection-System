@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 import cv2
 import numpy as np
@@ -30,10 +32,13 @@ class CameraService:
         if self._capture is not None and self._capture.isOpened():
             return
 
+        self._preflight_source()
         capture = cv2.VideoCapture(self.config.source)
         if isinstance(self.config.source, int):
             capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.width)
             capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.height)
+        elif hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
+            capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         if not capture.isOpened():
             raise RuntimeError(
@@ -76,3 +81,27 @@ class CameraService:
         finally:
             self.release()
             cv2.destroyAllWindows()
+
+    def _preflight_source(self) -> None:
+        """Fail faster for unreachable HTTP video streams."""
+        if not isinstance(self.config.source, str):
+            return
+
+        parsed = urlparse(self.config.source)
+        if parsed.scheme not in {"http", "https"}:
+            return
+
+        request = Request(self.config.source, headers={"User-Agent": "ClassroomMonitor/1.0"})
+        try:
+            with urlopen(request, timeout=3) as response:
+                status_code = getattr(response, "status", 200)
+                if status_code >= 400:
+                    raise RuntimeError(
+                        f"Unable to open camera source: {self.config.source}. "
+                        f"HTTP status {status_code}."
+                    )
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"Unable to open camera source: {self.config.source}. "
+                "Check whether the camera or stream is available."
+            ) from exc

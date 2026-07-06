@@ -37,6 +37,7 @@ class SessionPayload(BaseModel):
     duration_seconds: int = 0
     enable_pose_analysis: bool = True
     save_alert_snapshots: bool = True
+    last_error: str = ""
 
 
 class SessionActionResponse(BaseModel):
@@ -140,6 +141,7 @@ class ClassroomCurrentResponse(BaseModel):
     status: SessionStatus
     video_source: str
     duration_seconds: int
+    last_error: str = ""
     resolution: ResolutionPayload
     performance: PerformancePayload
     summary: SummaryPayload
