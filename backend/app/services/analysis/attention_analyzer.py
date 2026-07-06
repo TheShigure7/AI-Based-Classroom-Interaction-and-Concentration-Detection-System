@@ -30,6 +30,7 @@ class AttentionAnalyzer:
 
     # --- per-second rates ---
     NORMAL_RATE = 2.0            # +2 / s  (no negative behaviour)
+    SLEEPING_RATE = -3.0         # -3 / s
     TALKING_RISK_RATE = -3.0     # -3 / s
     PHONE_RISK_RATE = -5.0       # -5 / s
 
@@ -63,8 +64,12 @@ class AttentionAnalyzer:
                 score += self.HAND_RAISE_BONUS
                 student.last_hand_raise_bonus_time = now
 
+        # --- sleeping ---
+        if student.sleeping:
+            score += self.SLEEPING_RATE * dt
+
         # --- head_down: progressive penalty ---
-        if student.head_down:
+        elif student.head_down:
             if student.head_down_start_time is None:
                 student.head_down_start_time = now
             hd_elapsed = now - student.head_down_start_time
@@ -90,6 +95,7 @@ class AttentionAnalyzer:
         if (
             not student.head_down
             and not student.phone_risk
+            and not student.sleeping
             and not student.talking_risk
         ):
             score += self.NORMAL_RATE * dt

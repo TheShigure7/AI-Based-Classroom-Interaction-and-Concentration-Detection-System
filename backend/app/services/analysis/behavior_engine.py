@@ -7,9 +7,11 @@ from dataclasses import dataclass, field
 from app.services.analysis.attention_analyzer import AttentionAnalyzer
 from app.services.analysis.hand_raise_analyzer import HandRaiseAnalyzer
 from app.services.analysis.phone_use_analyzer import PhoneUseAnalyzer
+from app.services.analysis.sleeping_analyzer import SleepingAnalyzer
 from app.services.analysis.talking_analyzer import TalkingAnalyzer, TalkingSubject
 from app.services.detection.yolo_detector import DetectionResult
 from app.services.pose.mediapipe_estimator import PoseEstimate
+from app.services.pose.mediapipe_hands import HandResult, MediaPipeHandsEstimator
 from app.services.tracking.student_tracker import TrackedStudent
 
 
@@ -20,6 +22,7 @@ class BehaviorState:
     hand_raised: bool = False
     head_down: bool = False
     phone_risk: bool = False
+    sleeping: bool = False
     talking_risk: bool = False
 
 
@@ -40,11 +43,13 @@ class BehaviorEngine:
         hand_raise_analyzer: HandRaiseAnalyzer | None = None,
         attention_analyzer: AttentionAnalyzer | None = None,
         phone_use_analyzer: PhoneUseAnalyzer | None = None,
+        sleeping_analyzer: SleepingAnalyzer | None = None,
         talking_analyzer: TalkingAnalyzer | None = None,
     ) -> None:
         self.hand_raise_analyzer = hand_raise_analyzer or HandRaiseAnalyzer()
         self.attention_analyzer = attention_analyzer or AttentionAnalyzer()
         self.phone_use_analyzer = phone_use_analyzer or PhoneUseAnalyzer()
+        self.sleeping_analyzer = sleeping_analyzer or SleepingAnalyzer()
         self.talking_analyzer = talking_analyzer or TalkingAnalyzer()
 
         # Per-student temporal smoothing state
@@ -82,6 +87,7 @@ class BehaviorEngine:
                 )
                 for phone_detection in phone_detections
             ),
+            sleeping=self.sleeping_analyzer.analyze(tracked_student.track_id, landmarks),
         )
 
     def analyze_scene_talking(
@@ -120,6 +126,7 @@ class BehaviorEngine:
             "hand_raised": behavior_state.hand_raised,
             "head_down": behavior_state.head_down,
             "phone_risk": behavior_state.phone_risk,
+            "sleeping": behavior_state.sleeping,
         }
 
         for name, detected in raw.items():
@@ -145,6 +152,87 @@ class BehaviorEngine:
             active = self._smooth(track_id, "talking_risk", raw_talking)
             detection.talking_risk = active
             tracked_student.talking_risk = active
+
+    # ------------------------------------------------------------------
+    # Hand-landmark refinement
+    # ------------------------------------------------------------------
+
+    def refine_hand_raise(
+        self,
+        person_detections: list[DetectionResult],
+        track_assignments: dict[int, TrackedStudent],
+        hand_results: list[HandResult],
+    ) -> None:
+        """Confirm hand_raised via MediaPipe Hands finger-state analysis.
+
+        For each student already flagged as hand_raised by the pose-based
+        rules, check whether an associated open hand (>=2 fingers extended)
+        exists.  If no open hand is found, the flag is downgraded to reduce
+        false positives.
+        """
+        if not hand_results:
+            return
+
+        # Build per-student hand associations
+        associations = self._associate_hands(person_detections, hand_results)
+
+        for index, detection in enumerate(person_detections):
+            if not detection.hand_raised:
+                continue
+
+            student_hands = associations.get(index, [])
+            if not student_hands:
+                # No hand detected near this student → downgrade
+                detection.hand_raised = False
+                track_assignments[index].hand_raised = False
+                continue
+
+            # At least one associated hand should be open
+            any_open = any(
+                MediaPipeHandsEstimator.is_hand_open(h.landmarks)
+                for h in student_hands
+            )
+            if not any_open:
+                detection.hand_raised = False
+                track_assignments[index].hand_raised = False
+
+    @staticmethod
+    def _associate_hands(
+        person_detections: list[DetectionResult],
+        hand_results: list[HandResult],
+    ) -> dict[int, list[HandResult]]:
+        """Map each detected hand to the student it most likely belongs to.
+
+        A hand belongs to a student when the hand bbox center lies inside
+        the student bbox or the bboxes overlap enough.
+        """
+        associations: dict[int, list[HandResult]] = {}
+
+        for hand in hand_results:
+            hx = (hand.bbox[0] + hand.bbox[2]) / 2
+            hy = (hand.bbox[1] + hand.bbox[3]) / 2
+
+            best_idx = -1
+            best_overlap = 0.0
+
+            for idx, det in enumerate(person_detections):
+                x1, y1, x2, y2 = det.bbox
+                # Hand center inside student bbox → strong association
+                if x1 <= hx <= x2 and y1 <= hy <= y2:
+                    best_idx = idx
+                    break
+
+                # Otherwise use bbox IoU
+                iou = _bbox_iou(hand.bbox, det.bbox)
+                if iou > best_overlap:
+                    best_overlap = iou
+                    best_idx = idx
+
+            if best_idx >= 0:
+                associations.setdefault(best_idx, []).append(hand)
+
+        return associations
+
 
     # ------------------------------------------------------------------
     # Temporal smoothing
@@ -177,3 +265,20 @@ class BehaviorEngine:
                 active_set.discard(name)
 
         return name in active_set
+
+
+def _bbox_iou(
+    a: tuple[int, int, int, int],
+    b: tuple[int, int, int, int],
+) -> float:
+    """Intersection-over-union of two pixel bboxes."""
+    xl = max(a[0], b[0])
+    yt = max(a[1], b[1])
+    xr = min(a[2], b[2])
+    yb = min(a[3], b[3])
+    if xr <= xl or yb <= yt:
+        return 0.0
+    inter = (xr - xl) * (yb - yt)
+    area_a = (a[2] - a[0]) * (a[3] - a[1])
+    area_b = (b[2] - b[0]) * (b[3] - b[1])
+    return inter / (area_a + area_b - inter)

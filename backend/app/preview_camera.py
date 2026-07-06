@@ -19,10 +19,11 @@ import cv2
 import numpy as np
 
 from app.services.analysis.attention_analyzer import AttentionAnalyzer, AttentionSummary
-from app.services.analysis.behavior_engine import BehaviorEngine
+from app.services.analysis.behavior_engine import BehaviorEngine, BehaviorState
 from app.services.camera.capture import CameraConfig, CameraService
 from app.services.detection.yolo_detector import DetectionResult, YoloDetector
 from app.services.pose.mediapipe_estimator import MediaPipePoseEstimator
+from app.services.pose.mediapipe_hands import MediaPipeHandsEstimator
 from app.services.tracking.student_tracker import StudentTracker
 
 
@@ -90,6 +91,7 @@ def inference_loop(
     state: SharedState,
     detector: YoloDetector,
     pose_estimator: MediaPipePoseEstimator,
+    hands_estimator: MediaPipeHandsEstimator,
     behavior_engine: BehaviorEngine,
     attention_analyzer: AttentionAnalyzer,
     student_tracker: StudentTracker,
@@ -128,8 +130,14 @@ def inference_loop(
         person_detections = [d for d in detections if d.label == "person"]
         phone_detections = [d for d in detections if d.label == "cell phone"]
         track_assignments = student_tracker.update([d.bbox for d in person_detections])
-        pose_estimates: dict[int, object | None] = {}
 
+        # --- Hand landmarks (full frame, once) ---
+        hand_results = hands_estimator.detect_hands(frame_copy)
+
+        pose_estimates: dict[int, object | None] = {}
+        raw_states: dict[int, BehaviorState] = {}
+
+        # --- Phase 1: raw per-person analysis (no smoothing yet) ---
         for index, detection in enumerate(person_detections):
             tracked_student = track_assignments[index]
             pose_estimate = pose_estimator.estimate_person_pose(frame_copy, detection.bbox)
@@ -140,6 +148,26 @@ def inference_loop(
                 phone_detections,
                 pose_estimate,
             )
+            raw_states[index] = behavior_state
+            # Write raw flags to detection (will be refined before smoothing)
+            detection.hand_raised = behavior_state.hand_raised
+            detection.head_down = behavior_state.head_down
+            detection.phone_risk = behavior_state.phone_risk
+            detection.sleeping = behavior_state.sleeping
+
+        # --- Phase 2: refine hand_raised with finger-state analysis ---
+        behavior_engine.refine_hand_raise(
+            person_detections,
+            track_assignments,
+            hand_results,
+        )
+
+        # --- Phase 3: apply temporal smoothing ---
+        for index, detection in enumerate(person_detections):
+            tracked_student = track_assignments[index]
+            behavior_state = raw_states[index]
+            # Update behavior_state with refined hand_raised
+            behavior_state.hand_raised = detection.hand_raised
             behavior_engine.apply_behavior_state(
                 detection,
                 tracked_student,
@@ -191,6 +219,7 @@ def main() -> None:
     camera = CameraService(config=CameraConfig(source=stream_source))
     detector = YoloDetector()
     pose_estimator = MediaPipePoseEstimator()
+    hands_estimator = MediaPipeHandsEstimator()
     attention_analyzer = AttentionAnalyzer()
     behavior_engine = BehaviorEngine(attention_analyzer=attention_analyzer)
     student_tracker = StudentTracker()
@@ -204,6 +233,7 @@ def main() -> None:
             state,
             detector,
             pose_estimator,
+            hands_estimator,
             behavior_engine,
             attention_analyzer,
             student_tracker,
