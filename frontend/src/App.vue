@@ -23,11 +23,15 @@
           </select>
         </label>
 
-        <button class="button button--primary" :disabled="busy" @click="handleStart">
-          开始检测
+        <button class="button button--primary" :disabled="busy" @click="handleDetectionToggle">
+          {{ detectionButtonText }}
         </button>
-        <button class="button button--ghost" :disabled="busy" @click="handleStop">
-          停止检测
+        <button
+          class="button button--ghost"
+          :disabled="busy || !canTogglePlayback"
+          @click="handlePlaybackToggle"
+        >
+          {{ playbackButtonText }}
         </button>
       </div>
     </header>
@@ -44,12 +48,79 @@
             </div>
           </div>
 
-          <div class="video-frame">
+          <div ref="videoFrameRef" class="video-frame" :class="{ 'is-paused': isPlaybackPaused }">
             <img
+              ref="videoImageRef"
               class="video-frame__image"
-              :src="videoStreamUrl"
+              :src="displayedVideoUrl"
               alt="实时检测视频流"
             />
+            <div class="video-overlay">
+              <div class="video-overlay__meta">
+                <span class="status-pill" :class="statusClass">{{ statusText }}</span>
+                <span class="status-meta status-meta--overlay">
+                  {{ sessionStatus.session_id || "--" }}
+                </span>
+                <span class="status-meta status-meta--overlay">{{ formattedDuration }}</span>
+              </div>
+
+              <div class="video-overlay__actions">
+                <button
+                  class="icon-button"
+                  :class="{ 'icon-button--active': isDetectionRunning }"
+                  :disabled="busy"
+                  :title="detectionButtonText"
+                  :aria-label="detectionButtonText"
+                  @click="handleDetectionToggle"
+                >
+                  <svg v-if="isDetectionRunning" viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="7" y="7" width="10" height="10" rx="2" />
+                  </svg>
+                  <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M8 6.5v11l9-5.5-9-5.5Z" />
+                  </svg>
+                </button>
+
+                <button
+                  class="icon-button"
+                  :disabled="busy || !canTogglePlayback"
+                  :title="playbackButtonText"
+                  :aria-label="playbackButtonText"
+                  @click="handlePlaybackToggle"
+                >
+                  <svg v-if="isPlaybackPaused" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M8 6.5v11l9-5.5-9-5.5Z" />
+                  </svg>
+                  <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="7" y="6.5" width="3.5" height="11" rx="1.2" />
+                    <rect x="13.5" y="6.5" width="3.5" height="11" rx="1.2" />
+                  </svg>
+                </button>
+
+                <button
+                  class="icon-button"
+                  :title="fullscreenButtonText"
+                  :aria-label="fullscreenButtonText"
+                  @click="toggleFullscreen"
+                >
+                  <svg v-if="isFullscreen" viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M9 5H5v4h2V7h2V5Zm10 0h-4v2h2v2h2V5Zm-2 10v2h-2v2h4v-4h-2ZM7 15H5v4h4v-2H7v-2Z"
+                    />
+                  </svg>
+                  <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M9 5H5v4h2V7h2V5Zm8 0h-4v2h2v2h2V5Zm0 12h-2v2h4v-4h-2v2ZM7 15H5v4h4v-2H7v-2Z"
+                    />
+                    <path
+                      d="M10 10h4v4h-4z"
+                      fill="none"
+                    />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div v-if="isPlaybackPaused" class="video-frame__overlay">画面已暂停</div>
           </div>
 
           <div v-if="sessionStatus.last_error" class="error-banner">
@@ -179,9 +250,18 @@ const settings = reactive({
 
 const selectedVideoSource = ref("0");
 const busy = ref(false);
+const isPlaybackPaused = ref(false);
+const isFullscreen = ref(false);
+const pausedFrameUrl = ref("");
+const videoStreamNonce = ref(0);
+const videoFrameRef = ref(null);
+const videoImageRef = ref(null);
 let socket;
 
-const videoStreamUrl = computed(() => `/api/v1/video/stream?ts=${Date.now()}`);
+const videoStreamUrl = computed(() => `/api/v1/video/stream?ts=${videoStreamNonce.value}`);
+const displayedVideoUrl = computed(() =>
+  isPlaybackPaused.value && pausedFrameUrl.value ? pausedFrameUrl.value : videoStreamUrl.value
+);
 
 const formattedDuration = computed(() => {
   const total = sessionStatus.duration_seconds || classroom.duration_seconds || 0;
@@ -191,18 +271,34 @@ const formattedDuration = computed(() => {
   return `${hours}:${minutes}:${seconds}`;
 });
 
+const visualStatus = computed(() => {
+  if (isPlaybackPaused.value) {
+    return "paused";
+  }
+  return sessionStatus.status;
+});
+
 const statusText = computed(() => {
   const mapping = {
     idle: "未启动",
     running: "检测中",
-    paused: "已暂停",
+    paused: "暂停中",
     stopped: "已停止",
     error: "错误",
   };
-  return mapping[sessionStatus.status] ?? sessionStatus.status;
+  return mapping[visualStatus.value] ?? visualStatus.value;
 });
 
-const statusClass = computed(() => `is-${sessionStatus.status}`);
+const statusClass = computed(() => `is-${visualStatus.value}`);
+const isDetectionRunning = computed(() => sessionStatus.status === "running");
+const detectionButtonText = computed(() =>
+  isDetectionRunning.value ? "停止检测" : "开始检测"
+);
+const playbackButtonText = computed(() => (isPlaybackPaused.value ? "继续" : "暂停"));
+const fullscreenButtonText = computed(() => (isFullscreen.value ? "退出全屏" : "全屏"));
+const canTogglePlayback = computed(
+  () => isDetectionRunning.value || isPlaybackPaused.value || Boolean(pausedFrameUrl.value)
+);
 
 const behaviorItems = computed(() => [
   {
@@ -240,10 +336,12 @@ const behaviorItems = computed(() => [
 onMounted(async () => {
   await bootstrap();
   connectSocket();
+  document.addEventListener("fullscreenchange", handleFullscreenChange);
 });
 
 onBeforeUnmount(() => {
   socket?.close();
+  document.removeEventListener("fullscreenchange", handleFullscreenChange);
 });
 
 async function bootstrap() {
@@ -262,6 +360,9 @@ async function bootstrap() {
 async function handleStart() {
   busy.value = true;
   try {
+    isPlaybackPaused.value = false;
+    pausedFrameUrl.value = "";
+    videoStreamNonce.value += 1;
     const response = await startSession({
       video_source: selectedVideoSource.value,
       enable_pose_analysis: true,
@@ -277,12 +378,35 @@ async function handleStart() {
 async function handleStop() {
   busy.value = true;
   try {
+    isPlaybackPaused.value = false;
+    pausedFrameUrl.value = "";
     const response = await stopSession();
     Object.assign(sessionStatus, response.session);
     await refreshCurrentState();
   } finally {
     busy.value = false;
   }
+}
+
+async function handleDetectionToggle() {
+  if (isDetectionRunning.value) {
+    await handleStop();
+    return;
+  }
+  await handleStart();
+}
+
+async function handlePlaybackToggle() {
+  if (isPlaybackPaused.value) {
+    isPlaybackPaused.value = false;
+    pausedFrameUrl.value = "";
+    videoStreamNonce.value += 1;
+    await refreshCurrentState();
+    return;
+  }
+
+  freezeCurrentFrame();
+  isPlaybackPaused.value = true;
 }
 
 async function refreshCurrentState() {
@@ -297,6 +421,9 @@ async function refreshCurrentState() {
 function connectSocket() {
   socket = createRealtimeSocket({
     onMessage(event) {
+      if (isPlaybackPaused.value) {
+        return;
+      }
       classroom.performance = event.performance;
       classroom.summary = event.summary;
       classroom.latest_alerts = event.latest_alerts;
@@ -310,5 +437,37 @@ function connectSocket() {
 
 function formatRate(rate) {
   return `${Math.round((rate || 0) * 100)}%`;
+}
+
+function freezeCurrentFrame() {
+  const image = videoImageRef.value;
+  if (!image || !image.naturalWidth || !image.naturalHeight) {
+    return;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const context = canvas.getContext("2d");
+  context?.drawImage(image, 0, 0, canvas.width, canvas.height);
+  pausedFrameUrl.value = canvas.toDataURL("image/jpeg", 0.92);
+}
+
+async function toggleFullscreen() {
+  const element = videoFrameRef.value;
+  if (!element) {
+    return;
+  }
+
+  if (!document.fullscreenElement) {
+    await element.requestFullscreen?.();
+    return;
+  }
+
+  await document.exitFullscreen?.();
+}
+
+function handleFullscreenChange() {
+  isFullscreen.value = Boolean(document.fullscreenElement);
 }
 </script>
