@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Generator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
@@ -30,7 +30,7 @@ from app.models.schemas.realtime import (
     SummaryPayload,
 )
 from app.models.schemas.settings import SettingsPayload, UpdateSettingsRequest, VideoSourceOption
-from app.services.analysis.attention_analyzer import AttentionAnalyzer
+from app.services.analysis.attention_analyzer import AttentionAnalyzer, AttentionSummary
 from app.services.analysis.behavior_engine import BehaviorEngine
 from app.services.camera.capture import CameraConfig, CameraService
 from app.services.detection.yolo_detector import DetectionResult, YoloDetector
@@ -48,6 +48,19 @@ class AlertRecord:
     event_type: str
     attention_score: int
     snapshot_bytes: bytes
+
+
+@dataclass
+class RuntimePipelineState:
+    """Shared state between capture/render and inference threads."""
+
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    newest_frame: np.ndarray | None = None
+    frame_id: int = 0
+    processed_frame_id: int = -1
+    latest_detections: list[DetectionResult] = field(default_factory=list)
+    latest_attention_summary: AttentionSummary = field(default_factory=AttentionSummary)
+    error_message: str = ""
 
 
 class ClassroomRuntime:
@@ -79,6 +92,7 @@ class ClassroomRuntime:
         self._alerts: list[AlertRecord] = []
         self._alert_cooldowns: dict[tuple[str, str], float] = {}
         self._latest_frame_jpeg: bytes | None = None
+        self._latest_frame_version = 0
         self._settings = SettingsPayload(
             recent_video_sources=[VideoSourceOption(label="本地摄像头", value="0")]
         )
@@ -109,6 +123,7 @@ class ClassroomRuntime:
             self._alerts = []
             self._alert_cooldowns = {}
             self._latest_frame_jpeg = None
+            self._latest_frame_version = 0
             self._performance = PerformancePayload()
             self._stop_event = threading.Event()
 
@@ -234,17 +249,22 @@ class ClassroomRuntime:
 
     def mjpeg_stream(self) -> Generator[bytes, None, None]:
         """Yield the latest video frame as an MJPEG stream."""
+        last_version = -1
         while True:
             with self._lock:
                 frame = self._latest_frame_jpeg
+                frame_version = self._latest_frame_version
                 running = self._status == "running"
 
-            if frame is not None:
+            if frame is not None and frame_version != last_version:
+                last_version = frame_version
                 yield (
                     b"--frame\r\n"
                     b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
                 )
-            elif not running:
+                continue
+
+            if frame is None and not running:
                 blank = np.full((480, 854, 3), 235, dtype=np.uint8)
                 cv2.putText(
                     blank,
@@ -265,10 +285,14 @@ class ClassroomRuntime:
                         + b"\r\n"
                     )
 
-            time.sleep(0.08)
+            time.sleep(0.01)
 
     def _run_session(self) -> None:
         """Background detection loop used by the first-phase web API."""
+        capture_thread: threading.Thread | None = None
+        inference_thread: threading.Thread | None = None
+        camera: CameraService | None = None
+
         try:
             source = self._resolve_video_source(self._video_source)
             camera = CameraService(config=CameraConfig(source=source))
@@ -277,25 +301,143 @@ class ClassroomRuntime:
             attention_analyzer = AttentionAnalyzer()
             behavior_engine = BehaviorEngine(attention_analyzer=attention_analyzer)
             student_tracker = StudentTracker()
+            pipeline = RuntimePipelineState()
 
             camera.open()
-            inference_times: list[float] = []
-            display_times: list[float] = []
+
+            capture_thread = threading.Thread(
+                target=self._capture_render_loop,
+                args=(pipeline, camera, detector),
+                daemon=True,
+                name="classroom-capture-render",
+            )
+            inference_thread = threading.Thread(
+                target=self._inference_loop,
+                args=(
+                    pipeline,
+                    detector,
+                    pose_estimator,
+                    behavior_engine,
+                    attention_analyzer,
+                    student_tracker,
+                ),
+                daemon=True,
+                name="classroom-inference",
+            )
+
+            capture_thread.start()
+            inference_thread.start()
 
             while not self._stop_event.is_set():
-                loop_start = time.perf_counter()
+                with pipeline.lock:
+                    if pipeline.error_message:
+                        raise RuntimeError(pipeline.error_message)
+                time.sleep(0.03)
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                self._status = "error"
+                self._last_error = str(exc)
+                self._stopped_at = datetime.now()
+        finally:
+            self._stop_event.set()
+            if capture_thread is not None:
+                capture_thread.join(timeout=3.0)
+            if inference_thread is not None:
+                inference_thread.join(timeout=3.0)
+            if camera is not None:
+                camera.release()
+
+            with self._lock:
+                if self._status == "running":
+                    self._status = "stopped"
+                self._stopped_at = datetime.now()
+
+    def _capture_render_loop(
+        self,
+        pipeline: RuntimePipelineState,
+        camera: CameraService,
+        detector: YoloDetector,
+    ) -> None:
+        """Continuously capture latest frames and render newest view for MJPEG output."""
+        display_times: list[float] = []
+
+        try:
+            while not self._stop_event.is_set():
+                display_start = time.perf_counter()
                 frame = camera.read_frame()
-                detections = detector.detect_targets(frame)
+
+                with pipeline.lock:
+                    pipeline.newest_frame = frame
+                    pipeline.frame_id += 1
+                    detections = list(pipeline.latest_detections)
+                    attention_summary = pipeline.latest_attention_summary
+
+                output = detector.draw_detections(frame, detections)
+                self._draw_runtime_overlays(output, attention_summary)
+                ok, encoded = cv2.imencode(".jpg", output)
+                frame_bytes = encoded.tobytes() if ok else None
+
+                display_times = self._update_times(
+                    display_times,
+                    time.perf_counter() - display_start,
+                )
+                self._update_preview_frame(
+                    frame=output,
+                    frame_bytes=frame_bytes,
+                    display_fps=self._fps_from_times(display_times),
+                )
+        except Exception as exc:  # noqa: BLE001
+            with pipeline.lock:
+                if not pipeline.error_message:
+                    pipeline.error_message = str(exc)
+            self._stop_event.set()
+
+    def _inference_loop(
+        self,
+        pipeline: RuntimePipelineState,
+        detector: YoloDetector,
+        pose_estimator: MediaPipePoseEstimator | None,
+        behavior_engine: BehaviorEngine,
+        attention_analyzer: AttentionAnalyzer,
+        student_tracker: StudentTracker,
+    ) -> None:
+        """Run heavy inference only on the newest available frame and drop stale ones."""
+        inference_times: list[float] = []
+
+        try:
+            while not self._stop_event.is_set():
+                has_frame = False
+                frame: np.ndarray | None = None
+                current_frame_id = -1
+
+                with pipeline.lock:
+                    if pipeline.frame_id > pipeline.processed_frame_id:
+                        frame = pipeline.newest_frame
+                        current_frame_id = pipeline.frame_id
+                        has_frame = True
+
+                if not has_frame:
+                    time.sleep(0.005)
+                    continue
+
+                if frame is None:
+                    with pipeline.lock:
+                        pipeline.processed_frame_id = current_frame_id
+                    continue
+
+                inference_start = time.perf_counter()
+                frame_copy = frame.copy()
+                detections = detector.detect_targets(frame_copy)
+
                 person_detections = [d for d in detections if d.label == "person"]
                 phone_detections = [d for d in detections if d.label == "cell phone"]
                 track_assignments = student_tracker.update([d.bbox for d in person_detections])
                 pose_estimates: dict[int, Any | None] = {}
 
-                t_inference_start = time.perf_counter()
                 for index, detection in enumerate(person_detections):
                     tracked_student = track_assignments[index]
                     pose_estimate = (
-                        pose_estimator.estimate_person_pose(frame, detection.bbox)
+                        pose_estimator.estimate_person_pose(frame_copy, detection.bbox)
                         if pose_estimator is not None
                         else None
                     )
@@ -331,55 +473,56 @@ class ClassroomRuntime:
 
                 self._assign_display_ids(person_detections)
                 attention_summary = attention_analyzer.summarize(list(track_assignments.values()))
+
+                with pipeline.lock:
+                    pipeline.latest_detections = detections
+                    pipeline.latest_attention_summary = attention_summary
+                    pipeline.processed_frame_id = current_frame_id
+
                 inference_times = self._update_times(
                     inference_times,
-                    time.perf_counter() - t_inference_start,
+                    time.perf_counter() - inference_start,
                 )
-
-                output = detector.draw_detections(frame, detections)
-                self._draw_runtime_overlays(output, attention_summary)
-                ok, encoded = cv2.imencode(".jpg", output)
-                if ok:
-                    frame_bytes = encoded.tobytes()
-                else:
-                    frame_bytes = None
-
-                display_times = self._update_times(
-                    display_times,
-                    time.perf_counter() - loop_start,
-                )
-
-                self._update_runtime_state(
-                    frame=output,
-                    frame_bytes=frame_bytes,
+                self._update_inference_state(
+                    frame=frame_copy,
                     person_detections=person_detections,
                     attention_summary=attention_summary,
                     inference_fps=self._fps_from_times(inference_times),
-                    display_fps=self._fps_from_times(display_times),
                 )
-
-            camera.release()
         except Exception as exc:  # noqa: BLE001
-            with self._lock:
-                self._status = "error"
-                self._last_error = str(exc)
-                self._stopped_at = datetime.now()
-        finally:
-            with self._lock:
-                if self._status == "running":
-                    self._status = "stopped"
-                self._stopped_at = datetime.now()
+            with pipeline.lock:
+                if not pipeline.error_message:
+                    pipeline.error_message = str(exc)
+            self._stop_event.set()
 
-    def _update_runtime_state(
+    def _update_preview_frame(
         self,
         frame: np.ndarray,
         frame_bytes: bytes | None,
-        person_detections: list[DetectionResult],
-        attention_summary: Any,
-        inference_fps: float,
         display_fps: float,
     ) -> None:
-        """Update shared runtime state from the latest processed frame."""
+        """Publish the newest rendered frame for MJPEG output."""
+        with self._lock:
+            self._resolution = ResolutionPayload(
+                width=int(frame.shape[1]),
+                height=int(frame.shape[0]),
+            )
+            self._performance = PerformancePayload(
+                inference_fps=self._performance.inference_fps,
+                display_fps=round(display_fps, 1),
+            )
+            if frame_bytes is not None:
+                self._latest_frame_jpeg = frame_bytes
+                self._latest_frame_version += 1
+
+    def _update_inference_state(
+        self,
+        frame: np.ndarray,
+        person_detections: list[DetectionResult],
+        attention_summary: AttentionSummary,
+        inference_fps: float,
+    ) -> None:
+        """Update summary, students, alerts, and inference FPS from processed detections."""
         students = [self._serialize_student(detection) for detection in person_detections]
         student_count = len(person_detections)
         behavior_counts = BehaviorCountsPayload(
@@ -399,13 +542,9 @@ class ClassroomRuntime:
         )
 
         with self._lock:
-            self._resolution = ResolutionPayload(
-                width=int(frame.shape[1]),
-                height=int(frame.shape[0]),
-            )
             self._performance = PerformancePayload(
                 inference_fps=round(inference_fps, 1),
-                display_fps=round(display_fps, 1),
+                display_fps=self._performance.display_fps,
             )
             self._summary = SummaryPayload(
                 student_count=student_count,
@@ -415,8 +554,6 @@ class ClassroomRuntime:
                 behavior_rates=behavior_rates,
             )
             self._students = students
-            if frame_bytes is not None:
-                self._latest_frame_jpeg = frame_bytes
             self._refresh_alerts_locked(frame, person_detections)
 
     def _refresh_alerts_locked(
@@ -434,7 +571,7 @@ class ClassroomRuntime:
             if event_type is None:
                 continue
 
-            key = (detection.track_id or detection.track_id or "unknown", event_type)
+            key = (detection.track_id or "unknown", event_type)
             last_time = self._alert_cooldowns.get(key, 0.0)
             if now - last_time < self.ALERT_COOLDOWN_SECONDS:
                 continue
@@ -475,7 +612,11 @@ class ClassroomRuntime:
     def _duration_seconds_locked(self) -> int:
         if self._started_at is None:
             return 0
-        end_time = datetime.now() if self._status == "running" else (self._stopped_at or datetime.now())
+        end_time = (
+            datetime.now()
+            if self._status == "running"
+            else (self._stopped_at or datetime.now())
+        )
         return max(0, int((end_time - self._started_at).total_seconds()))
 
     @staticmethod
@@ -490,7 +631,8 @@ class ClassroomRuntime:
                 y2=detection.bbox[3],
             ),
             attention_score=int(detection.attention_score),
-            is_low_attention=int(detection.attention_score) < ClassroomRuntime.LOW_ATTENTION_THRESHOLD,
+            is_low_attention=int(detection.attention_score)
+            < ClassroomRuntime.LOW_ATTENTION_THRESHOLD,
             states=StudentStatesPayload(
                 hand_raised=detection.hand_raised,
                 head_down=detection.head_down,
@@ -552,7 +694,7 @@ class ClassroomRuntime:
         return 1.0 / avg_time if avg_time > 0 else 0.0
 
     @staticmethod
-    def _draw_runtime_overlays(frame: np.ndarray, attention_summary: Any) -> None:
+    def _draw_runtime_overlays(frame: np.ndarray, attention_summary: AttentionSummary) -> None:
         cv2.putText(
             frame,
             f"Attention avg: {attention_summary.average_score}",
@@ -613,7 +755,9 @@ class ClassroomRuntime:
             return
 
         existing = [
-            option for option in self._settings.recent_video_sources if option.value != normalized_source
+            option
+            for option in self._settings.recent_video_sources
+            if option.value != normalized_source
         ]
         label = "本地摄像头" if normalized_source == "0" else normalized_source
         existing.insert(0, VideoSourceOption(label=label, value=normalized_source))
