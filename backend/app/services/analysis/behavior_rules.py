@@ -100,21 +100,10 @@ def _is_arm_raised(
     # --- Tier 2: Angle-based check ---
     # Arm is bent upward (elbow angle < 120°) and wrist is above shoulder level
     angle = _arm_angle(shoulder, elbow, wrist)
-    tier2 = (
+    return (
         angle < 120.0
         and wrist.y < shoulder.y + 0.05
     )
-    if tier2:
-        return True
-
-    # --- Tier 3: Fallback — wrist clearly above shoulder ---
-    # Even if elbow is uncertain, a wrist well above shoulder is a strong signal
-    tier3 = (
-        wrist.y < shoulder.y - 0.02
-        and wrist.y < nose.y + 0.15
-    )
-
-    return tier3
 
 
 def is_head_down_from_landmarks(landmarks: Iterable[object]) -> bool:
@@ -172,69 +161,6 @@ def is_phone_risk(
     )
 
     return inside_person or near_lower_body
-
-
-def is_sleeping_posture_from_landmarks(landmarks: Iterable[object]) -> bool:
-    """Return whether posture looks closer to sleeping than brief head-down behavior."""
-
-    landmark_list = list(landmarks)
-    if len(landmark_list) < 13:
-        return False
-
-    nose = landmark_list[0]
-    left_shoulder = landmark_list[11]
-    right_shoulder = landmark_list[12]
-
-    if not all(landmark_visible(point) for point in (nose, left_shoulder, right_shoulder)):
-        return False
-
-    shoulder_center_y = (left_shoulder.y + right_shoulder.y) / 2.0
-    shoulder_span = abs(left_shoulder.x - right_shoulder.x)
-    if shoulder_span < 0.08:
-        return False
-
-    nose_to_shoulder_gap = shoulder_center_y - nose.y
-    shoulder_tilt = abs(left_shoulder.y - right_shoulder.y)
-    return nose_to_shoulder_gap < 0.08 and shoulder_tilt < 0.08
-
-
-def extract_sleep_signature(landmarks: Iterable[object]) -> tuple[float, ...] | None:
-    """Return a compact upper-body signature used for motion smoothing."""
-
-    landmark_list = list(landmarks)
-    if len(landmark_list) < 13:
-        return None
-
-    nose = landmark_list[0]
-    left_shoulder = landmark_list[11]
-    right_shoulder = landmark_list[12]
-    if not all(landmark_visible(point) for point in (nose, left_shoulder, right_shoulder)):
-        return None
-
-    return (
-        float(nose.x),
-        float(nose.y),
-        float(left_shoulder.x),
-        float(left_shoulder.y),
-        float(right_shoulder.x),
-        float(right_shoulder.y),
-    )
-
-
-def calculate_motion_delta(
-    previous_signature: tuple[float, ...] | None,
-    current_signature: tuple[float, ...] | None,
-) -> float:
-    """Return average absolute motion between two compact signatures."""
-
-    if previous_signature is None or current_signature is None:
-        return 1.0
-
-    deltas = [
-        abs(current_value - previous_value)
-        for previous_value, current_value in zip(previous_signature, current_signature)
-    ]
-    return sum(deltas) / len(deltas)
 
 
 def head_turn_direction_from_landmarks(landmarks: Iterable[object]) -> int:

@@ -16,7 +16,6 @@ class TrackedStudent:
     hand_raised: bool = False
     head_down: bool = False
     phone_risk: bool = False
-    sleeping: bool = False
     talking_risk: bool = False
 
     # Time-based scoring state (perf_counter timestamps)

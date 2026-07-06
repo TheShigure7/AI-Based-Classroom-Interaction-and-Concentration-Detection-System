@@ -20,7 +20,6 @@ class DetectionResult:
     hand_raised: bool = False
     head_down: bool = False
     phone_risk: bool = False
-    sleeping: bool = False
     talking_risk: bool = False
 
 
@@ -181,19 +180,6 @@ class YoloDetector:
             2,
             cv2.LINE_AA,
         )
-        sleeping_count = sum(
-            1 for detection in detections if detection.label == "person" and detection.sleeping
-        )
-        cv2.putText(
-            output,
-            f"Sleep risk: {sleeping_count}",
-            (20, 205),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (180, 105, 255),
-            2,
-            cv2.LINE_AA,
-        )
         talking_count = sum(
             1 for detection in detections if detection.label == "person" and detection.talking_risk
         )
@@ -224,8 +210,6 @@ class YoloDetector:
         """Resolve bbox color from current student state."""
         if detection.phone_risk:
             return (0, 0, 255)
-        if detection.sleeping:
-            return (180, 105, 255)
         if detection.talking_risk:
             return (0, 128, 255)
         if detection.head_down:
@@ -244,8 +228,6 @@ class YoloDetector:
             statuses.append(("head down", (0, 0, 255)))
         if detection.phone_risk:
             statuses.append(("phone risk", (0, 140, 255)))
-        if detection.sleeping:
-            statuses.append(("sleep risk", (180, 105, 255)))
         if detection.talking_risk:
             statuses.append(("talking risk", (0, 128, 255)))
 
