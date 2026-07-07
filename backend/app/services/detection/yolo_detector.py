@@ -182,7 +182,7 @@ class YoloDetector:
             cv2.LINE_AA,
         )
         sleeping_count = sum(
-            1 for detection in detections if detection.label == "person" and detection.sleeping
+            1 for d in detections if d.label == "person" and d.sleeping
         )
         cv2.putText(
             output,

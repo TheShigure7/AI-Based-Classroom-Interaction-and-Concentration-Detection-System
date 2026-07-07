@@ -1,4 +1,4 @@
-"""Sleeping-risk analysis with temporal smoothing."""
+"""Sleeping-risk analysis — head on hands, motion-based."""
 
 from __future__ import annotations
 
@@ -10,49 +10,34 @@ from app.services.analysis.behavior_rules import (
 
 
 class SleepingAnalyzer:
-    """Estimate sleeping risk from pose posture and low motion over time."""
+    """Check per-frame sleeping posture + low body motion.
 
-    CANDIDATE_FRAMES = 8
-    RELEASE_FRAMES = 3
+    No temporal smoothing — that is handled by BehaviorEngine.
+    """
+
     LOW_MOTION_THRESHOLD = 0.025
 
     def __init__(self) -> None:
-        self._candidate_counts: dict[str, int] = {}
-        self._release_counts: dict[str, int] = {}
-        self._sleeping_state: dict[str, bool] = {}
-        self._previous_signatures: dict[str, tuple[float, ...]] = {}
+        self._prev: dict[str, tuple[float, ...]] = {}
 
     def analyze(self, track_id: str, landmarks: list[object] | None) -> bool:
-        """Return a smoothed sleeping-risk state for one tracked student."""
+        """Return True when both posture and low-motion conditions are met."""
         if landmarks is None:
-            return self._step_release(track_id)
+            return False
 
-        posture_risk = is_sleeping_posture_from_landmarks(landmarks)
-        signature = extract_sleep_signature(landmarks)
-        previous_signature = self._previous_signatures.get(track_id)
-        motion_delta = calculate_motion_delta(previous_signature, signature)
-        low_motion = (
-            signature is not None
-            and previous_signature is not None
-            and motion_delta <= self.LOW_MOTION_THRESHOLD
-        )
+        if not is_sleeping_posture_from_landmarks(landmarks):
+            self._prev.pop(track_id, None)
+            return False
 
-        if signature is not None:
-            self._previous_signatures[track_id] = signature
+        sig = extract_sleep_signature(landmarks)
+        if sig is None:
+            return False
 
-        if posture_risk and low_motion:
-            self._candidate_counts[track_id] = self._candidate_counts.get(track_id, 0) + 1
-            self._release_counts[track_id] = 0
-            if self._candidate_counts[track_id] >= self.CANDIDATE_FRAMES:
-                self._sleeping_state[track_id] = True
-        else:
-            self._candidate_counts[track_id] = 0
-            self._step_release(track_id)
+        prev_sig = self._prev.get(track_id)
+        self._prev[track_id] = sig
 
-        return self._sleeping_state.get(track_id, False)
+        if prev_sig is None:
+            return False  # need at least one previous frame to compare motion
 
-    def _step_release(self, track_id: str) -> bool:
-        self._release_counts[track_id] = self._release_counts.get(track_id, 0) + 1
-        if self._release_counts[track_id] >= self.RELEASE_FRAMES:
-            self._sleeping_state[track_id] = False
-        return self._sleeping_state.get(track_id, False)
+        motion = calculate_motion_delta(prev_sig, sig)
+        return motion <= self.LOW_MOTION_THRESHOLD

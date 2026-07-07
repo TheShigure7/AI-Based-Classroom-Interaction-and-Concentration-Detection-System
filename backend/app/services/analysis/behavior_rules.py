@@ -17,47 +17,12 @@ def landmark_visible(landmark: object, threshold: float = 0.25) -> bool:
     return visibility >= threshold and presence >= threshold
 
 
-def _arm_angle(
-    shoulder: object,
-    elbow: object,
-    wrist: object,
-) -> float:
-    """Return the angle (in degrees) at the elbow formed by shoulder-elbow-wrist.
-
-    A small angle (< 90°) means the forearm is bent upward (hand near head).
-    A large angle (> 150°) means the arm is extended straight.
-    """
-    # Vectors: shoulder->elbow and wrist->elbow
-    se_x = shoulder.x - elbow.x
-    se_y = shoulder.y - elbow.y
-    we_x = wrist.x - elbow.x
-    we_y = wrist.y - elbow.y
-
-    dot = se_x * we_x + se_y * we_y
-    mag_se = math.sqrt(se_x ** 2 + se_y ** 2)
-    mag_we = math.sqrt(we_x ** 2 + we_y ** 2)
-
-    if mag_se < 1e-6 or mag_we < 1e-6:
-        return 0.0
-
-    cos_angle = max(-1.0, min(1.0, dot / (mag_se * mag_we)))
-    return math.degrees(math.acos(cos_angle))
-
-
 def is_hand_raised_from_landmarks(landmarks: Iterable[object]) -> bool:
-    """Detect hand-raising using a multi-tier approach for classroom settings.
-
-    Landmark indexes follow the official MediaPipe pose model:
-    11/12 shoulders, 13/14 elbows, 15/16 wrists, 0 nose.
-
-    Three tiers, from strict to lenient:
-    1. High-confidence: wrist above shoulder + elbow near shoulder + wrist near nose
-    2. Angle-based: arm bent upward (angle < 120°) + wrist above shoulder
-    3. Fallback: wrist clearly above shoulder level, even with uncertain elbow
-    """
+    """Detect hand-raising: wrist above shoulder, elbow up, wrist near nose,
+    and fingers above wrist (hand pointing upward)."""
 
     landmark_list = list(landmarks)
-    if len(landmark_list) < 17:
+    if len(landmark_list) < 21:
         return False
 
     nose = landmark_list[0]
@@ -67,54 +32,42 @@ def is_hand_raised_from_landmarks(landmarks: Iterable[object]) -> bool:
     right_elbow = landmark_list[14]
     left_wrist = landmark_list[15]
     right_wrist = landmark_list[16]
+    left_pinky = landmark_list[17]
+    right_pinky = landmark_list[18]
+    left_index = landmark_list[19]
+    right_index = landmark_list[20]
 
-    return _is_arm_raised(
-        nose, left_shoulder, left_elbow, left_wrist
-    ) or _is_arm_raised(
-        nose, right_shoulder, right_elbow, right_wrist
+    return _arm_raised(
+        nose, left_shoulder, left_elbow, left_wrist, left_pinky, left_index
+    ) or _arm_raised(
+        nose, right_shoulder, right_elbow, right_wrist, right_pinky, right_index
     )
 
 
-def _is_arm_raised(
+def _arm_raised(
     nose: object,
     shoulder: object,
     elbow: object,
     wrist: object,
+    pinky: object,
+    index: object,
 ) -> bool:
-    """Multi-tier hand-raise check for a single arm."""
-
-    # All four key landmarks should be minimally visible
-    if not all(landmark_visible(pt) for pt in (nose, shoulder, elbow, wrist)):
+    """Two-rule hand-raise: either full-arm or simple finger-up."""
+    if not all(landmark_visible(pt) for pt in (nose, shoulder, elbow, wrist, pinky, index)):
         return False
 
-    # --- Tier 1: High-confidence geometric check (relaxed from original) ---
-    # Wrist is above shoulder, elbow is not too low, wrist is near or above nose
-    tier1 = (
-        wrist.y < shoulder.y
-        and elbow.y < shoulder.y + 0.08
-        and wrist.y < nose.y + 0.12
-    )
-    if tier1:
+    fingers_up = pinky.y < wrist.y or index.y < wrist.y
+    wrist_high = wrist.y < shoulder.y
+
+    if not (wrist_high and fingers_up):
+        return False
+
+    # Rule 1 (strict): full arm — elbow up + wrist near nose
+    if elbow.y < shoulder.y + 0.08 and wrist.y < nose.y + 0.12:
         return True
 
-    # --- Tier 2: Angle-based check ---
-    # Arm is bent upward (elbow angle < 120°) and wrist is above shoulder level
-    angle = _arm_angle(shoulder, elbow, wrist)
-    tier2 = (
-        angle < 120.0
-        and wrist.y < shoulder.y + 0.05
-    )
-    if tier2:
-        return True
-
-    # --- Tier 3: Fallback — wrist clearly above shoulder ---
-    # Even if elbow is uncertain, a wrist well above shoulder is a strong signal
-    tier3 = (
-        wrist.y < shoulder.y - 0.02
-        and wrist.y < nose.y + 0.15
-    )
-
-    return tier3
+    # Rule 2 (lenient): wrist above shoulder + fingers above wrist
+    return True
 
 
 def is_head_down_from_landmarks(landmarks: Iterable[object]) -> bool:
@@ -174,69 +127,6 @@ def is_phone_risk(
     return inside_person or near_lower_body
 
 
-def is_sleeping_posture_from_landmarks(landmarks: Iterable[object]) -> bool:
-    """Return whether posture looks closer to sleeping than brief head-down behavior."""
-
-    landmark_list = list(landmarks)
-    if len(landmark_list) < 13:
-        return False
-
-    nose = landmark_list[0]
-    left_shoulder = landmark_list[11]
-    right_shoulder = landmark_list[12]
-
-    if not all(landmark_visible(point) for point in (nose, left_shoulder, right_shoulder)):
-        return False
-
-    shoulder_center_y = (left_shoulder.y + right_shoulder.y) / 2.0
-    shoulder_span = abs(left_shoulder.x - right_shoulder.x)
-    if shoulder_span < 0.08:
-        return False
-
-    nose_to_shoulder_gap = shoulder_center_y - nose.y
-    shoulder_tilt = abs(left_shoulder.y - right_shoulder.y)
-    return nose_to_shoulder_gap < 0.08 and shoulder_tilt < 0.08
-
-
-def extract_sleep_signature(landmarks: Iterable[object]) -> tuple[float, ...] | None:
-    """Return a compact upper-body signature used for motion smoothing."""
-
-    landmark_list = list(landmarks)
-    if len(landmark_list) < 13:
-        return None
-
-    nose = landmark_list[0]
-    left_shoulder = landmark_list[11]
-    right_shoulder = landmark_list[12]
-    if not all(landmark_visible(point) for point in (nose, left_shoulder, right_shoulder)):
-        return None
-
-    return (
-        float(nose.x),
-        float(nose.y),
-        float(left_shoulder.x),
-        float(left_shoulder.y),
-        float(right_shoulder.x),
-        float(right_shoulder.y),
-    )
-
-
-def calculate_motion_delta(
-    previous_signature: tuple[float, ...] | None,
-    current_signature: tuple[float, ...] | None,
-) -> float:
-    """Return average absolute motion between two compact signatures."""
-
-    if previous_signature is None or current_signature is None:
-        return 1.0
-
-    deltas = [
-        abs(current_value - previous_value)
-        for previous_value, current_value in zip(previous_signature, current_signature)
-    ]
-    return sum(deltas) / len(deltas)
-
-
 def head_turn_direction_from_landmarks(landmarks: Iterable[object]) -> int:
     """Estimate coarse head turn direction from nose offset against shoulder center.
 
@@ -288,3 +178,123 @@ def are_students_close_for_talking(
     vertical_distance = abs(a_center_y - b_center_y)
 
     return horizontal_distance <= avg_width * 1.6 and vertical_distance <= avg_height * 0.45
+
+
+# ---------------------------------------------------------------------------
+# Sleeping: head resting on hand(s) placed flat on desk
+# ---------------------------------------------------------------------------
+
+
+def is_sleeping_posture_from_landmarks(landmarks: Iterable[object]) -> bool:
+    """Detect sleeping posture from two independent signals.
+
+    Mode A – Head resting on hand(s) placed flat on the desk:
+      wrist at/below elbow + wrist below shoulder + nose close to wrist.
+
+    Mode B – Eyes closed:
+      MediaPipe pose model eye landmarks (indices 2 & 5) drop to very low
+      visibility when the eyes are shut because the iris / eye contour
+      becomes undetectable.  This provides a lightweight approximation of
+      eye-closed detection without an extra face-landmark model.
+    """
+
+    landmark_list = list(landmarks)
+    if len(landmark_list) < 17:
+        return False
+
+    nose = landmark_list[0]
+    left_shoulder = landmark_list[11]
+    right_shoulder = landmark_list[12]
+    left_elbow = landmark_list[13]
+    right_elbow = landmark_list[14]
+    left_wrist = landmark_list[15]
+    right_wrist = landmark_list[16]
+
+    if not all(landmark_visible(pt) for pt in (nose, left_shoulder, right_shoulder)):
+        return False
+
+    # --- Mode A: head on hands ---
+    if _head_on_desk_hand(nose, left_shoulder, left_elbow, left_wrist):
+        return True
+    if _head_on_desk_hand(nose, right_shoulder, right_elbow, right_wrist):
+        return True
+
+    # --- Mode B: eyes closed ---
+    if _eyes_closed(landmark_list):
+        return True
+
+    return False
+
+
+def _eyes_closed(landmark_list: list[object]) -> bool:
+    """Return True when both eyes appear closed.
+
+    Uses MediaPipe Pose model landmarks: 2 = left eye, 5 = right eye.
+    When the eyes are shut the iris texture disappears, causing the eye
+    landmarks' visibility to drop sharply.
+    """
+    left_eye = landmark_list[2]
+    right_eye = landmark_list[5]
+
+    left_vis = float(getattr(left_eye, "visibility", 1.0))
+    right_vis = float(getattr(right_eye, "visibility", 1.0))
+
+    return left_vis < 0.2 and right_vis < 0.2
+
+
+def _head_on_desk_hand(
+    nose: object,
+    shoulder: object,
+    elbow: object,
+    wrist: object,
+) -> bool:
+    """Single-arm check: hand on desk + head resting on it."""
+    if not all(landmark_visible(pt) for pt in (elbow, wrist)):
+        return False
+
+    # Hand on desk surface: wrist not higher than elbow.
+    hand_on_desk = wrist.y >= elbow.y - 0.02
+
+    # Wrist below shoulder level (not raised).
+    wrist_below_shoulder = wrist.y > shoulder.y
+
+    # Head close to hand in 2-D image space.
+    dx = float(nose.x) - float(wrist.x)
+    dy = float(nose.y) - float(wrist.y)
+    nose_to_wrist = math.sqrt(dx * dx + dy * dy)
+    head_near_hand = nose_to_wrist < 0.22
+
+    return hand_on_desk and wrist_below_shoulder and head_near_hand
+
+
+def extract_sleep_signature(landmarks: Iterable[object]) -> tuple[float, ...] | None:
+    """Compact upper-body signature for between-frame motion comparison."""
+
+    landmark_list = list(landmarks)
+    if len(landmark_list) < 13:
+        return None
+
+    nose = landmark_list[0]
+    left_shoulder = landmark_list[11]
+    right_shoulder = landmark_list[12]
+    if not all(landmark_visible(pt) for pt in (nose, left_shoulder, right_shoulder)):
+        return None
+
+    return (
+        float(nose.x),
+        float(nose.y),
+        float(left_shoulder.x),
+        float(left_shoulder.y),
+        float(right_shoulder.x),
+        float(right_shoulder.y),
+    )
+
+
+def calculate_motion_delta(
+    prev: tuple[float, ...] | None,
+    curr: tuple[float, ...] | None,
+) -> float:
+    """Average absolute motion between two signatures (0 = still, higher = moving)."""
+    if prev is None or curr is None:
+        return 1.0
+    return sum(abs(a - b) for a, b in zip(prev, curr)) / len(prev)

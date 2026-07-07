@@ -19,6 +19,11 @@ class TrackedStudent:
     sleeping: bool = False
     talking_risk: bool = False
 
+    # Time-based scoring state (perf_counter timestamps)
+    last_score_update_time: float = 0.0
+    last_hand_raise_bonus_time: float = 0.0
+    head_down_start_time: float | None = None
+
 
 class StudentTracker:
     """Assigns stable anonymous IDs using bbox overlap and center distance."""

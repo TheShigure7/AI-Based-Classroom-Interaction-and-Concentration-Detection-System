@@ -22,8 +22,8 @@ class TalkingSubject:
 class TalkingAnalyzer:
     """Estimate talking risk by checking whether nearby students face each other."""
 
-    CANDIDATE_FRAMES = 6
-    RELEASE_FRAMES = 3
+    CANDIDATE_FRAMES = 1    # raw per-frame signal; smoothing is handled by BehaviorEngine
+    RELEASE_FRAMES = 1
 
     def __init__(self) -> None:
         self._pair_candidate_counts: dict[tuple[str, str], int] = {}
