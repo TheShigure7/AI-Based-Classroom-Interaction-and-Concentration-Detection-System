@@ -26,6 +26,10 @@ from app.services.pose.mediapipe_estimator import MediaPipePoseEstimator
 from app.services.pose.mediapipe_hands import MediaPipeHandsEstimator
 from app.services.tracking.student_tracker import StudentTracker
 
+ENABLE_HAND_REFINEMENT = os.getenv("ENABLE_HAND_REFINEMENT", "1") != "0"
+HAND_REFINE_INTERVAL = max(1, int(os.getenv("HAND_REFINE_INTERVAL", "3")))
+HAND_DETECTION_MAX_SIDE = max(160, int(os.getenv("HAND_DETECTION_MAX_SIDE", "640")))
+
 
 # ---------------------------------------------------------------------------
 # Shared state between display and inference threads
@@ -91,7 +95,7 @@ def inference_loop(
     state: SharedState,
     detector: YoloDetector,
     pose_estimator: MediaPipePoseEstimator,
-    hands_estimator: MediaPipeHandsEstimator,
+    hands_estimator: MediaPipeHandsEstimator | None,
     behavior_engine: BehaviorEngine,
     attention_analyzer: AttentionAnalyzer,
     student_tracker: StudentTracker,
@@ -99,6 +103,8 @@ def inference_loop(
     """Background thread: run heavy inference on the newest available frame."""
 
     tick_times: list[float] = []
+    cached_hand_results = []
+    cached_hand_frame_id = -HAND_REFINE_INTERVAL
 
     while True:
         # --- Check for exit signal & grab the newest frame ---
@@ -131,9 +137,6 @@ def inference_loop(
         phone_detections = [d for d in detections if d.label == "cell phone"]
         track_assignments = student_tracker.update([d.bbox for d in person_detections])
 
-        # --- Hand landmarks (full frame, once) ---
-        hand_results = hands_estimator.detect_hands(frame_copy)
-
         pose_estimates: dict[int, object | None] = {}
         raw_states: dict[int, BehaviorState] = {}
 
@@ -156,11 +159,23 @@ def inference_loop(
             detection.sleeping = behavior_state.sleeping
 
         # --- Phase 2: refine hand_raised with finger-state analysis ---
-        behavior_engine.refine_hand_raise(
-            person_detections,
-            track_assignments,
-            hand_results,
+        hand_raise_candidates = any(state.hand_raised for state in raw_states.values())
+        should_refresh_hands = (
+            ENABLE_HAND_REFINEMENT
+            and hands_estimator is not None
+            and hand_raise_candidates
+            and (current_frame_id - cached_hand_frame_id >= HAND_REFINE_INTERVAL)
         )
+        if should_refresh_hands:
+            cached_hand_results = hands_estimator.detect_hands(frame_copy)
+            cached_hand_frame_id = current_frame_id
+
+        if ENABLE_HAND_REFINEMENT and hands_estimator is not None and hand_raise_candidates:
+            behavior_engine.refine_hand_raise(
+                person_detections,
+                track_assignments,
+                cached_hand_results,
+            )
 
         # --- Phase 3: apply temporal smoothing ---
         for index, detection in enumerate(person_detections):
@@ -219,7 +234,11 @@ def main() -> None:
     camera = CameraService(config=CameraConfig(source=stream_source))
     detector = YoloDetector()
     pose_estimator = MediaPipePoseEstimator()
-    hands_estimator = MediaPipeHandsEstimator()
+    hands_estimator = (
+        MediaPipeHandsEstimator(detection_max_side=HAND_DETECTION_MAX_SIDE)
+        if ENABLE_HAND_REFINEMENT
+        else None
+    )
     attention_analyzer = AttentionAnalyzer()
     behavior_engine = BehaviorEngine(attention_analyzer=attention_analyzer)
     student_tracker = StudentTracker()

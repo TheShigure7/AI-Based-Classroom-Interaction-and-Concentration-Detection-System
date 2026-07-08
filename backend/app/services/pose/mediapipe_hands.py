@@ -52,8 +52,13 @@ class MediaPipeHandsEstimator:
 
     FINGER_NAMES = ("thumb", "index", "middle", "ring", "pinky")
 
-    def __init__(self, model_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        model_path: Path | None = None,
+        detection_max_side: int = 640,
+    ) -> None:
         self.model_path = model_path or self._default_model_path()
+        self.detection_max_side = detection_max_side
         self._ensure_model()
         self.landmarker = self._create_landmarker()
 
@@ -90,7 +95,8 @@ class MediaPipeHandsEstimator:
 
     def detect_hands(self, frame: np.ndarray) -> list[HandResult]:
         """Run hand landmark detection on a BGR frame (or person ROI)."""
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        processed_frame, scale_x, scale_y = self._prepare_frame(frame)
+        rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         result = self.landmarker.detect(mp_image)
 
@@ -98,7 +104,7 @@ class MediaPipeHandsEstimator:
         if not result.hand_landmarks:
             return hands
 
-        h, w = frame.shape[:2]
+        h, w = processed_frame.shape[:2]
         for idx, landmarks in enumerate(result.hand_landmarks):
             handedness = result.handedness[idx][0]
             score = float(result.handedness[idx][0].score)
@@ -106,8 +112,8 @@ class MediaPipeHandsEstimator:
             # Compute bbox in frame pixel coordinates
             xs = [lm.x * w for lm in landmarks]
             ys = [lm.y * h for lm in landmarks]
-            x1, x2 = int(min(xs)), int(max(xs))
-            y1, y2 = int(min(ys)), int(max(ys))
+            x1, x2 = int(min(xs) * scale_x), int(max(xs) * scale_x)
+            y1, y2 = int(min(ys) * scale_y), int(max(ys) * scale_y)
 
             hands.append(HandResult(
                 landmarks=list(landmarks),
@@ -117,6 +123,24 @@ class MediaPipeHandsEstimator:
             ))
 
         return hands
+
+    def _prepare_frame(self, frame: np.ndarray) -> tuple[np.ndarray, float, float]:
+        """Downscale large frames before hand detection to reduce inference cost."""
+        if self.detection_max_side <= 0:
+            return frame, 1.0, 1.0
+
+        original_h, original_w = frame.shape[:2]
+        longest_side = max(original_h, original_w)
+        if longest_side <= self.detection_max_side:
+            return frame, 1.0, 1.0
+
+        resize_ratio = self.detection_max_side / float(longest_side)
+        resized_w = max(1, int(original_w * resize_ratio))
+        resized_h = max(1, int(original_h * resize_ratio))
+        resized = cv2.resize(frame, (resized_w, resized_h), interpolation=cv2.INTER_AREA)
+        scale_x = original_w / float(resized_w)
+        scale_y = original_h / float(resized_h)
+        return resized, scale_x, scale_y
 
     # ------------------------------------------------------------------
     # Finger state
