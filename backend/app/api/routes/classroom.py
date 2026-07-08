@@ -29,7 +29,7 @@ def stream_classroom_video() -> StreamingResponse:
 
 @router.get("/api/v1/alerts/{alert_id}/image")
 def get_alert_snapshot(alert_id: str) -> Response:
-    """Return the image snapshot for one in-memory alert."""
+    """Return the image snapshot for one alert."""
     snapshot = runtime.get_alert_snapshot(alert_id)
     if snapshot is None:
         raise HTTPException(status_code=404, detail="alert snapshot not found")

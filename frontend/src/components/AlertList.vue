@@ -1,7 +1,7 @@
 <template>
   <section class="panel">
     <div class="panel__header">
-      <h3>异常截图列表</h3>
+      <h3>行为截图列表</h3>
       <span class="panel__meta">最近 {{ alerts.length }} 条</span>
     </div>
 
@@ -17,7 +17,7 @@
       </article>
     </div>
 
-    <div v-else class="empty-state">当前暂无异常截图。</div>
+    <div v-else class="empty-state">当前暂无行为截图。</div>
   </section>
 </template>
 

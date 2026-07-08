@@ -85,6 +85,12 @@
         </div>
 
         <label class="field field--form">
+          <span>截图保存目录</span>
+          <input v-model="form.alert_snapshot_dir" placeholder="data/alerts" />
+          <div class="field-hint">可填写相对路径或绝对路径，例如 `data/alerts` 或 `D:\ClassroomAlerts`。</div>
+        </label>
+
+        <label class="field field--form">
           <span>低专注阈值</span>
           <input v-model.number="form.low_attention_threshold" type="number" min="0" max="100" />
         </label>
@@ -136,6 +142,7 @@ const form = reactive({
   enable_daily_summary: false,
   enable_email_summary: false,
   email_address: "",
+  alert_snapshot_dir: "data/alerts",
 });
 
 const canAddNetworkSource = computed(() => Boolean(networkSourceDraft.value.trim()));

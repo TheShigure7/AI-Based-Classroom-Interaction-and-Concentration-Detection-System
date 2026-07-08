@@ -17,6 +17,30 @@ export async function getSettings() {
   return response.json();
 }
 
+export async function getRecords(params = {}) {
+  const searchParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") {
+      searchParams.set(key, String(value));
+    }
+  }
+  const query = searchParams.toString();
+  const response = await fetch(`/api/v1/records${query ? `?${query}` : ""}`);
+  return response.json();
+}
+
+export async function getAnalyticsOverview(params = {}) {
+  const searchParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") {
+      searchParams.set(key, String(value));
+    }
+  }
+  const query = searchParams.toString();
+  const response = await fetch(`/api/v1/analytics/overview${query ? `?${query}` : ""}`);
+  return response.json();
+}
+
 export async function updateSettings(payload) {
   const response = await fetch("/api/v1/settings", {
     method: "PUT",

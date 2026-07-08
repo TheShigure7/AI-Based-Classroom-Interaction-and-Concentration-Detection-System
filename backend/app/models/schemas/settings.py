@@ -27,6 +27,7 @@ class SettingsPayload(BaseModel):
     enable_daily_summary: bool = False
     enable_email_summary: bool = False
     email_address: str = ""
+    alert_snapshot_dir: str = "data/alerts"
 
 
 class UpdateSettingsRequest(BaseModel):
@@ -43,3 +44,4 @@ class UpdateSettingsRequest(BaseModel):
     enable_daily_summary: bool | None = None
     enable_email_summary: bool | None = None
     email_address: str | None = None
+    alert_snapshot_dir: str | None = None

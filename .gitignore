@@ -31,6 +31,8 @@ data/logs/*
 data/db/*.db
 data/db/*.sqlite3
 !data/db/.gitkeep
+data/alerts/**
+!data/alerts/.gitkeep
 
 # IDE
 .idea/

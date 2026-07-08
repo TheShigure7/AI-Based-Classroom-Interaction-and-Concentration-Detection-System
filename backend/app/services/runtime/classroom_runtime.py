@@ -7,12 +7,14 @@ import time
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import cv2
 import numpy as np
 
+from app.models.schemas.analytics import AnalyticsOverviewResponse
 from app.models.schemas.realtime import (
     AlertPayload,
     BBoxPayload,
@@ -29,12 +31,15 @@ from app.models.schemas.realtime import (
     StudentStatesPayload,
     SummaryPayload,
 )
+from app.models.schemas.records import RecordsListResponse
 from app.models.schemas.settings import SettingsPayload, UpdateSettingsRequest, VideoSourceOption
 from app.services.analysis.attention_analyzer import AttentionAnalyzer, AttentionSummary
 from app.services.analysis.behavior_engine import BehaviorEngine
 from app.services.camera.capture import CameraConfig, CameraService
 from app.services.detection.yolo_detector import DetectionResult, YoloDetector
 from app.services.pose.mediapipe_estimator import MediaPipePoseEstimator
+from app.services.storage import RuntimeStore
+from app.services.storage.runtime_store import StoredAlertRecord
 from app.services.tracking.student_tracker import StudentTracker
 
 
@@ -48,6 +53,7 @@ class AlertRecord:
     event_type: str
     attention_score: int
     snapshot_bytes: bytes
+    snapshot_path: str = ""
 
 
 @dataclass
@@ -67,7 +73,13 @@ class ClassroomRuntime:
     """Background runtime that powers the first-phase realtime web app."""
 
     LOW_ATTENTION_THRESHOLD = 60
-    ALERT_EVENT_TYPES = ("phone_risk", "sleeping", "talking_risk", "low_attention")
+    ALERT_EVENT_TYPES = (
+        "hand_raised",
+        "phone_risk",
+        "sleeping",
+        "talking_risk",
+        "low_attention",
+    )
     ALERT_COOLDOWN_SECONDS = 5.0
     ALERT_LIMIT = 24
 
@@ -75,6 +87,7 @@ class ClassroomRuntime:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._store = RuntimeStore()
 
         self._status = "idle"
         self._session_id = ""
@@ -91,11 +104,14 @@ class ClassroomRuntime:
         self._students: list[StudentPayload] = []
         self._alerts: list[AlertRecord] = []
         self._alert_cooldowns: dict[tuple[str, str], float] = {}
+        self._alert_sequence = 0
         self._latest_frame_jpeg: bytes | None = None
         self._latest_frame_version = 0
-        self._settings = SettingsPayload(
+        default_settings = SettingsPayload(
+            alert_snapshot_dir=self._store.default_alert_snapshot_dir(),
             recent_video_sources=[VideoSourceOption(label="本地摄像头", value="0")]
         )
+        self._settings = self._store.load_settings(default_settings)
 
     def start_session(self, request: StartSessionRequest) -> SessionActionResponse:
         """Start a new runtime session if one is not already running."""
@@ -122,6 +138,7 @@ class ClassroomRuntime:
             self._students = []
             self._alerts = []
             self._alert_cooldowns = {}
+            self._alert_sequence = 0
             self._latest_frame_jpeg = None
             self._latest_frame_version = 0
             self._performance = PerformancePayload()
@@ -133,12 +150,13 @@ class ClassroomRuntime:
                 name="classroom-runtime",
             )
             self._thread.start()
-
-            return SessionActionResponse(
+            response = SessionActionResponse(
                 success=True,
                 message="session started",
                 session=self._build_session_payload_locked(),
             )
+            self._persist_session_locked()
+            return response
 
     def stop_session(self) -> SessionActionResponse:
         """Stop the current runtime session."""
@@ -163,11 +181,13 @@ class ClassroomRuntime:
             if self._status == "running":
                 self._status = "stopped"
             self._stopped_at = datetime.now()
-            return SessionActionResponse(
+            response = SessionActionResponse(
                 success=True,
                 message="session stopped",
                 session=self._build_session_payload_locked(),
             )
+            self._persist_session_locked()
+            return response
 
     def get_session_status(self) -> SessionPayload:
         """Return the current session metadata."""
@@ -223,6 +243,9 @@ class ClassroomRuntime:
                 self._settings.enable_email_summary = request.enable_email_summary
             if request.email_address is not None:
                 self._settings.email_address = request.email_address
+            if request.alert_snapshot_dir is not None:
+                self._settings.alert_snapshot_dir = request.alert_snapshot_dir
+            self._persist_settings_locked()
             return self._settings.model_copy(deep=True)
 
     def get_realtime_event(self) -> RealtimeEvent:
@@ -245,7 +268,13 @@ class ClassroomRuntime:
             for alert in self._alerts:
                 if alert.alert_id == alert_id:
                     return alert.snapshot_bytes
-        return None
+        snapshot_path = self._store.get_alert_snapshot_path(alert_id)
+        if snapshot_path is None:
+            return None
+        path = Path(snapshot_path)
+        if not path.exists():
+            return None
+        return path.read_bytes()
 
     def mjpeg_stream(self) -> Generator[bytes, None, None]:
         """Yield the latest video frame as an MJPEG stream."""
@@ -338,6 +367,7 @@ class ClassroomRuntime:
                 self._status = "error"
                 self._last_error = str(exc)
                 self._stopped_at = datetime.now()
+                self._persist_session_locked()
         finally:
             self._stop_event.set()
             if capture_thread is not None:
@@ -351,6 +381,7 @@ class ClassroomRuntime:
                 if self._status == "running":
                     self._status = "stopped"
                 self._stopped_at = datetime.now()
+                self._persist_session_locked()
 
     def _capture_render_loop(
         self,
@@ -576,21 +607,105 @@ class ClassroomRuntime:
             if now - last_time < self.ALERT_COOLDOWN_SECONDS:
                 continue
 
+            self._alert_sequence += 1
+            alert_id = f"{self._session_id}_{self._alert_sequence:04d}"
             snapshot_bytes = self._encode_snapshot(frame, detection.bbox)
             if snapshot_bytes is None:
                 continue
-
+            timestamp = self._now_iso()
+            snapshot_path = self._write_alert_snapshot(
+                alert_id=alert_id,
+                timestamp=timestamp,
+                snapshot_bytes=snapshot_bytes,
+            )
             alert = AlertRecord(
-                alert_id=f"ALERT_{len(self._alerts) + 1:04d}",
-                timestamp=self._now_iso(),
+                alert_id=alert_id,
+                timestamp=timestamp,
                 student_id=detection.track_id or "unknown",
                 event_type=event_type,
                 attention_score=int(detection.attention_score),
                 snapshot_bytes=snapshot_bytes,
+                snapshot_path=str(snapshot_path),
             )
             self._alerts.insert(0, alert)
             self._alerts = self._alerts[: self.ALERT_LIMIT]
             self._alert_cooldowns[key] = now
+            self._store.save_alert_record(
+                StoredAlertRecord(
+                    alert_id=alert.alert_id,
+                    session_id=self._session_id,
+                    timestamp=alert.timestamp,
+                    student_id=alert.student_id,
+                    event_type=alert.event_type,
+                    attention_score=alert.attention_score,
+                    snapshot_path=alert.snapshot_path,
+                )
+            )
+
+    def list_records(
+        self,
+        *,
+        event_type: str | None = None,
+        session_id: str | None = None,
+        limit: int = 50,
+    ) -> RecordsListResponse:
+        """Return persisted alert records for the records page."""
+        items = self._store.list_alert_records(
+            event_type=event_type,
+            session_id=session_id,
+            limit=limit,
+        )
+        total = self._store.count_alert_records(
+            event_type=event_type,
+            session_id=session_id,
+        )
+        sessions = self._store.list_session_options()
+        return RecordsListResponse(
+            total=total,
+            items=items,
+            sessions=sessions,
+        )
+
+    def get_analytics_overview(
+        self,
+        *,
+        session_id: str | None = None,
+        days: int = 7,
+    ) -> AnalyticsOverviewResponse:
+        """Return persisted analytics plus the latest in-memory classroom summary."""
+        bounded_days = max(1, min(days, 30))
+        with self._lock:
+            current_summary = self._summary.model_copy(deep=True)
+
+        return AnalyticsOverviewResponse(
+            generated_at=self._now_iso(),
+            days=bounded_days,
+            selected_session_id=session_id,
+            current_summary=current_summary,
+            total_sessions=self._store.count_detection_sessions(),
+            total_alerts=self._store.count_alert_records(
+                session_id=session_id,
+                days=bounded_days,
+            ),
+            unique_students=self._store.count_unique_students(
+                session_id=session_id,
+                days=bounded_days,
+            ),
+            event_breakdown=self._store.get_event_breakdown(
+                session_id=session_id,
+                days=bounded_days,
+            ),
+            daily_trend=self._store.get_daily_alert_trend(
+                session_id=session_id,
+                days=bounded_days,
+            ),
+            hourly_distribution=self._store.get_hourly_alert_distribution(
+                session_id=session_id,
+                days=bounded_days,
+            ),
+            recent_sessions=self._store.list_recent_session_analytics(),
+            sessions=self._store.list_session_options(),
+        )
 
     def _build_session_payload_locked(self) -> SessionPayload:
         return SessionPayload(
@@ -675,6 +790,8 @@ class ClassroomRuntime:
             return "phone_risk"
         if detection.talking_risk:
             return "talking_risk"
+        if detection.hand_raised:
+            return "hand_raised"
         if int(detection.attention_score) < ClassroomRuntime.LOW_ATTENTION_THRESHOLD:
             return "low_attention"
         return None
@@ -762,3 +879,51 @@ class ClassroomRuntime:
         label = "本地摄像头" if normalized_source == "0" else normalized_source
         existing.insert(0, VideoSourceOption(label=label, value=normalized_source))
         self._settings.recent_video_sources = existing[:8]
+        self._store.remember_video_source(
+            value=normalized_source,
+            label=label,
+            used_at=self._now_iso(),
+        )
+        self._persist_settings_locked()
+
+    def _persist_settings_locked(self) -> None:
+        """Persist current settings to local storage."""
+        self._store.save_settings(self._settings)
+
+    def _persist_session_locked(self) -> None:
+        """Persist current session metadata to local storage."""
+        if not self._session_id:
+            return
+        self._store.upsert_session(
+            session_id=self._session_id,
+            video_source=self._video_source,
+            started_at=(
+                self._started_at.isoformat(timespec="seconds")
+                if self._started_at is not None
+                else None
+            ),
+            stopped_at=(
+                self._stopped_at.isoformat(timespec="seconds")
+                if self._stopped_at is not None
+                else None
+            ),
+            status=self._status,
+            enable_pose_analysis=self._enable_pose_analysis,
+            save_alert_snapshots=self._save_alert_snapshots,
+            last_error=self._last_error,
+        )
+
+    def _write_alert_snapshot(
+        self,
+        alert_id: str,
+        timestamp: str,
+        snapshot_bytes: bytes,
+    ) -> Path:
+        """Write one alert snapshot to the configured directory."""
+        snapshot_dir = self._store.resolve_snapshot_dir(self._settings.alert_snapshot_dir)
+        date_part = timestamp[:10]
+        target_dir = snapshot_dir / date_part / (self._session_id or "session_unknown")
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path = target_dir / f"{alert_id}.jpg"
+        target_path.write_bytes(snapshot_bytes)
+        return target_path
