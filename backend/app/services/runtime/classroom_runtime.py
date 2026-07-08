@@ -31,7 +31,7 @@ from app.models.schemas.realtime import (
     StudentStatesPayload,
     SummaryPayload,
 )
-from app.models.schemas.records import RecordsListResponse
+from app.models.schemas.records import RecordDeleteResponse, RecordsListResponse
 from app.models.schemas.settings import SettingsPayload, UpdateSettingsRequest, VideoSourceOption
 from app.services.analysis.attention_analyzer import AttentionAnalyzer, AttentionSummary
 from app.services.analysis.behavior_engine import BehaviorEngine
@@ -81,6 +81,7 @@ class ClassroomRuntime:
         "low_attention",
     )
     ALERT_COOLDOWN_SECONDS = 5.0
+    HAND_RAISE_ALERT_COOLDOWN_SECONDS = 10.0
     ALERT_LIMIT = 24
 
     def __init__(self) -> None:
@@ -104,6 +105,8 @@ class ClassroomRuntime:
         self._students: list[StudentPayload] = []
         self._alerts: list[AlertRecord] = []
         self._alert_cooldowns: dict[tuple[str, str], float] = {}
+        self._display_id_by_track: dict[str, str] = {}
+        self._next_display_id = 1
         self._alert_sequence = 0
         self._latest_frame_jpeg: bytes | None = None
         self._latest_frame_version = 0
@@ -138,6 +141,8 @@ class ClassroomRuntime:
             self._students = []
             self._alerts = []
             self._alert_cooldowns = {}
+            self._display_id_by_track = {}
+            self._next_display_id = 1
             self._alert_sequence = 0
             self._latest_frame_jpeg = None
             self._latest_frame_version = 0
@@ -604,7 +609,7 @@ class ClassroomRuntime:
 
             key = (detection.track_id or "unknown", event_type)
             last_time = self._alert_cooldowns.get(key, 0.0)
-            if now - last_time < self.ALERT_COOLDOWN_SECONDS:
+            if now - last_time < self._cooldown_for_event_type(event_type):
                 continue
 
             self._alert_sequence += 1
@@ -621,7 +626,7 @@ class ClassroomRuntime:
             alert = AlertRecord(
                 alert_id=alert_id,
                 timestamp=timestamp,
-                student_id=detection.track_id or "unknown",
+                student_id=detection.display_id or detection.track_id or "unknown",
                 event_type=event_type,
                 attention_score=int(detection.attention_score),
                 snapshot_bytes=snapshot_bytes,
@@ -665,6 +670,21 @@ class ClassroomRuntime:
             items=items,
             sessions=sessions,
         )
+
+    def delete_record(self, alert_id: str) -> RecordDeleteResponse:
+        """Delete one persisted record and its saved snapshot file."""
+        snapshot_path = self._store.delete_alert_record(alert_id)
+        if snapshot_path is None:
+            return RecordDeleteResponse(success=False, alert_id=alert_id)
+
+        with self._lock:
+            self._alerts = [alert for alert in self._alerts if alert.alert_id != alert_id]
+
+        path = Path(snapshot_path)
+        if path.exists():
+            path.unlink(missing_ok=True)
+
+        return RecordDeleteResponse(success=True, alert_id=alert_id)
 
     def get_analytics_overview(
         self,
@@ -737,7 +757,7 @@ class ClassroomRuntime:
     @staticmethod
     def _serialize_student(detection: DetectionResult) -> StudentPayload:
         return StudentPayload(
-            student_id=detection.track_id or "unknown",
+            student_id=detection.display_id or detection.track_id or "unknown",
             track_id=detection.track_id or "unknown",
             bbox=BBoxPayload(
                 x1=detection.bbox[0],
@@ -838,15 +858,24 @@ class ClassroomRuntime:
         x1, y1, x2, y2 = bbox
         return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
 
+    def _assign_display_ids(self, person_detections: list[DetectionResult]) -> None:
+        for detection in person_detections:
+            if not detection.track_id:
+                detection.display_id = "unknown"
+                continue
+
+            display_id = self._display_id_by_track.get(detection.track_id)
+            if display_id is None:
+                display_id = str(self._next_display_id)
+                self._display_id_by_track[detection.track_id] = display_id
+                self._next_display_id += 1
+            detection.display_id = display_id
+
     @classmethod
-    def _assign_display_ids(cls, person_detections: list[DetectionResult]) -> None:
-        sorted_detections = sorted(
-            person_detections,
-            key=lambda d: (cls._bbox_center(d.bbox)[1], cls._bbox_center(d.bbox)[0]),
-            reverse=True,
-        )
-        for index, detection in enumerate(sorted_detections, start=1):
-            detection.track_id = str(index)
+    def _cooldown_for_event_type(cls, event_type: str) -> float:
+        if event_type == "hand_raised":
+            return cls.HAND_RAISE_ALERT_COOLDOWN_SECONDS
+        return cls.ALERT_COOLDOWN_SECONDS
 
     @staticmethod
     def _resolve_video_source(raw_source: str) -> int | str:

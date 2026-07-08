@@ -64,23 +64,38 @@
         <div class="switch-list">
           <label class="switch-row">
             <span>启用姿态分析</span>
-            <input v-model="form.enable_pose_analysis" type="checkbox" />
+            <span class="switch-control">
+              <input v-model="form.enable_pose_analysis" type="checkbox" />
+              <span class="switch-control__slider" />
+            </span>
           </label>
           <label class="switch-row">
             <span>启用睡觉检测</span>
-            <input v-model="form.enable_sleeping_detection" type="checkbox" />
+            <span class="switch-control">
+              <input v-model="form.enable_sleeping_detection" type="checkbox" />
+              <span class="switch-control__slider" />
+            </span>
           </label>
           <label class="switch-row">
             <span>启用疑似交谈检测</span>
-            <input v-model="form.enable_talking_detection" type="checkbox" />
+            <span class="switch-control">
+              <input v-model="form.enable_talking_detection" type="checkbox" />
+              <span class="switch-control__slider" />
+            </span>
           </label>
           <label class="switch-row">
             <span>保存异常截图</span>
-            <input v-model="form.save_alert_snapshots" type="checkbox" />
+            <span class="switch-control">
+              <input v-model="form.save_alert_snapshots" type="checkbox" />
+              <span class="switch-control__slider" />
+            </span>
           </label>
           <label class="switch-row">
             <span>实时提醒</span>
-            <input v-model="form.enable_realtime_alerts" type="checkbox" />
+            <span class="switch-control">
+              <input v-model="form.enable_realtime_alerts" type="checkbox" />
+              <span class="switch-control__slider" />
+            </span>
           </label>
         </div>
 
@@ -104,11 +119,17 @@
         <div class="switch-list">
           <label class="switch-row">
             <span>每日总结</span>
-            <input v-model="form.enable_daily_summary" type="checkbox" />
+            <span class="switch-control">
+              <input v-model="form.enable_daily_summary" type="checkbox" />
+              <span class="switch-control__slider" />
+            </span>
           </label>
           <label class="switch-row">
             <span>邮件总结</span>
-            <input v-model="form.enable_email_summary" type="checkbox" />
+            <span class="switch-control">
+              <input v-model="form.enable_email_summary" type="checkbox" />
+              <span class="switch-control__slider" />
+            </span>
           </label>
         </div>
 

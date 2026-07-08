@@ -29,6 +29,16 @@ export async function getRecords(params = {}) {
   return response.json();
 }
 
+export async function deleteRecord(alertId) {
+  const response = await fetch(`/api/v1/records/${alertId}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw new Error("delete record failed");
+  }
+  return response.json();
+}
+
 export async function getAnalyticsOverview(params = {}) {
   const searchParams = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {

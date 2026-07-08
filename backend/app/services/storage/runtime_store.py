@@ -209,6 +209,22 @@ class RuntimeStore:
             return None
         return str(row["snapshot_path"])
 
+    def delete_alert_record(self, alert_id: str) -> str | None:
+        """Delete one persisted alert record and return its snapshot path if found."""
+        with get_connection() as connection:
+            row = connection.execute(
+                "SELECT snapshot_path FROM alert_records WHERE alert_id = ?",
+                (alert_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            connection.execute(
+                "DELETE FROM alert_records WHERE alert_id = ?",
+                (alert_id,),
+            )
+            connection.commit()
+        return str(row["snapshot_path"])
+
     def list_alert_records(
         self,
         *,

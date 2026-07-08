@@ -120,6 +120,7 @@ class BehaviorEngine:
     ) -> None:
         """Smooth raw flags and write them to both detection and tracked state."""
         track_id = tracked_student.track_id
+        detection.track_id = track_id
         self._ensure_state(track_id)
 
         raw = {

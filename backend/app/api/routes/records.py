@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
-from app.models.schemas.records import RecordsListResponse
+from app.models.schemas.records import RecordDeleteResponse, RecordsListResponse
 from app.services.runtime import runtime
 
 
@@ -23,3 +23,12 @@ def list_records(
         session_id=session_id,
         limit=limit,
     )
+
+
+@router.delete("/{alert_id}", response_model=RecordDeleteResponse)
+def delete_record(alert_id: str) -> RecordDeleteResponse:
+    """Delete one persisted alert record."""
+    response = runtime.delete_record(alert_id)
+    if not response.success:
+        raise HTTPException(status_code=404, detail="record not found")
+    return response

@@ -28,7 +28,7 @@ class TrackedStudent:
 class StudentTracker:
     """Assigns stable anonymous IDs using bbox overlap and center distance."""
 
-    def __init__(self, max_missed_frames: int = 8) -> None:
+    def __init__(self, max_missed_frames: int = 18) -> None:
         self.max_missed_frames = max_missed_frames
         self.students: dict[str, TrackedStudent] = {}
         self._next_id = 1

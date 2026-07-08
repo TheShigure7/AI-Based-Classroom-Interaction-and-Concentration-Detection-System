@@ -32,3 +32,10 @@ class RecordsListResponse(BaseModel):
     total: int
     items: list[RecordItemPayload] = Field(default_factory=list)
     sessions: list[SessionOptionPayload] = Field(default_factory=list)
+
+
+class RecordDeleteResponse(BaseModel):
+    """Response payload for deleting one persisted record."""
+
+    success: bool
+    alert_id: str

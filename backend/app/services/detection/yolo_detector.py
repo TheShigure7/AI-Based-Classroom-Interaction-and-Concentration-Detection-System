@@ -16,6 +16,7 @@ class DetectionResult:
     confidence: float
     bbox: tuple[int, int, int, int]
     track_id: str = ""
+    display_id: str = ""
     attention_score: int = 100
     hand_raised: bool = False
     head_down: bool = False
@@ -213,7 +214,8 @@ class YoloDetector:
     def _build_primary_label(detection: DetectionResult, display_name: str) -> str:
         """Build the top label shown above the bbox."""
         if detection.label == "person" and detection.track_id:
-            label = f"{detection.track_id} | {detection.attention_score}"
+            student_label = detection.display_id or detection.track_id
+            label = f"{student_label} | {detection.attention_score}"
             if detection.attention_score < YoloDetector.LOW_ATTENTION_THRESHOLD:
                 label += " LOW"
             return label

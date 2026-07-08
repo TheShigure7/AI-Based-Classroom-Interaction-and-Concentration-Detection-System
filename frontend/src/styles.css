@@ -540,6 +540,7 @@ select {
 
 .alert-card__body {
   padding: 12px;
+  position: relative;
 }
 
 .alert-card__title {
@@ -552,6 +553,52 @@ select {
   font-size: 12px;
   color: #61748c;
   line-height: 1.5;
+}
+
+.alert-list__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.button--danger {
+  background: #cb4f44;
+  color: #ffffff;
+}
+
+.button--danger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.alert-card--selecting {
+  position: relative;
+}
+
+.alert-card--selected {
+  border-color: #7ca4ef;
+  box-shadow: 0 10px 24px rgba(65, 109, 191, 0.18);
+}
+
+.alert-card__checkbox {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.alert-card__checkbox input {
+  margin: 0;
+  width: 14px;
+  height: 14px;
 }
 
 .student-list {
@@ -714,7 +761,7 @@ select {
 
 .analytics-grid {
   display: grid;
-  grid-template-columns: minmax(0, 2.1fr) minmax(320px, 1fr);
+  grid-template-columns: repeat(12, minmax(0, 1fr));
   gap: 18px;
 }
 
@@ -763,6 +810,27 @@ select {
 .analytics-chart-card {
   display: flex;
   flex-direction: column;
+  grid-column: span 4;
+}
+
+.analytics-chart-card--wide {
+  grid-column: span 8;
+}
+
+.analytics-chart-card--side {
+  grid-column: span 4;
+}
+
+.analytics-chart-card--compact {
+  grid-column: span 4;
+}
+
+.analytics-chart-card--expanded {
+  grid-column: span 8;
+}
+
+.analytics-chart-card--full {
+  grid-column: 1 / -1;
 }
 
 .analytics-chart-card__hint {
@@ -819,9 +887,61 @@ select {
   color: #30445f;
 }
 
-.switch-row input {
-  width: 18px;
-  height: 18px;
+.switch-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 48px;
+  height: 28px;
+  flex: 0 0 auto;
+}
+
+.switch-control input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  margin: 0;
+}
+
+.switch-control__slider {
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: #d6e0ee;
+  border: 1px solid #c9d6e6;
+  transition:
+    background 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.switch-control__slider::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 2px 6px rgba(49, 74, 108, 0.22);
+  transition: transform 180ms ease;
+}
+
+.switch-control input:checked + .switch-control__slider {
+  background: linear-gradient(180deg, #4f90ff 0%, #2276ff 100%);
+  border-color: #2d78f1;
+  box-shadow: 0 8px 18px rgba(34, 118, 255, 0.18);
+}
+
+.switch-control input:checked + .switch-control__slider::after {
+  transform: translateX(20px);
+}
+
+.switch-control input:focus-visible + .switch-control__slider {
+  outline: 2px solid rgba(34, 118, 255, 0.35);
+  outline-offset: 2px;
 }
 
 .settings-history {
@@ -926,6 +1046,15 @@ select {
   .analytics-metrics,
   .analytics-grid {
     grid-template-columns: 1fr;
+  }
+
+  .analytics-chart-card,
+  .analytics-chart-card--wide,
+  .analytics-chart-card--side,
+  .analytics-chart-card--compact,
+  .analytics-chart-card--expanded,
+  .analytics-chart-card--full {
+    grid-column: auto;
   }
 
   .analytics-dashboard__field,

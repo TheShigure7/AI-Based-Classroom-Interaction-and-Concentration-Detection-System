@@ -78,7 +78,12 @@
         </div>
       </section>
 
-      <AlertList :alerts="alerts" />
+      <AlertList
+        :alerts="alerts"
+        :can-delete="true"
+        :busy="deleting"
+        @delete-selected="handleDeleteSelected"
+      />
     </div>
   </section>
 </template>
@@ -87,11 +92,12 @@
 import { computed, onMounted, reactive, ref, watch } from "vue";
 
 import AlertList from "../components/AlertList.vue";
-import { getRecords } from "../api/realtime";
+import { deleteRecord, getRecords } from "../api/realtime";
 
 const alerts = ref([]);
 const total = ref(0);
 const loading = ref(false);
+const deleting = ref(false);
 const sessions = ref([]);
 const filters = reactive({
   session_id: "",
@@ -123,6 +129,29 @@ async function loadRecords() {
     sessions.value = response.sessions ?? [];
   } finally {
     loading.value = false;
+  }
+}
+
+async function handleDeleteSelected(alertIds) {
+  if (!alertIds?.length) {
+    return;
+  }
+
+  const confirmed = window.confirm(`确认删除选中的 ${alertIds.length} 条记录吗？`);
+  if (!confirmed) {
+    return;
+  }
+
+  deleting.value = true;
+  try {
+    for (const alertId of alertIds) {
+      await deleteRecord(alertId);
+    }
+    await loadRecords();
+  } catch (error) {
+    window.alert("删除失败，请稍后重试。");
+  } finally {
+    deleting.value = false;
   }
 }
 

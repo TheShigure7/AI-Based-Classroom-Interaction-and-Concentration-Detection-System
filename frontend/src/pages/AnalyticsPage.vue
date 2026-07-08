@@ -98,11 +98,11 @@
         <VChart v-else class="analytics-chart analytics-chart--large" :option="attentionTrendOption" autoresize />
       </section>
 
-      <section class="panel analytics-chart-card">
+      <section class="panel analytics-chart-card analytics-chart-card--side">
         <div class="panel__header">
           <div>
-            <h3>行为风险频率</h3>
-            <div class="analytics-chart-card__hint">展示不同异常行为在当前范围内的出现次数。</div>
+            <h3>行为频率统计</h3>
+            <div class="analytics-chart-card__hint">展示不同课堂行为在当前范围内的出现次数。</div>
           </div>
         </div>
 
@@ -110,7 +110,7 @@
         <VChart v-else class="analytics-chart analytics-chart--medium" :option="eventBarOption" autoresize />
       </section>
 
-      <section class="panel analytics-chart-card">
+      <section class="panel analytics-chart-card analytics-chart-card--compact">
         <div class="panel__header">
           <div>
             <h3>具体风险（分%）</h3>
@@ -122,7 +122,7 @@
         <VChart v-else class="analytics-chart analytics-chart--small" :option="riskDonutOption" autoresize />
       </section>
 
-      <section class="panel analytics-chart-card">
+      <section class="panel analytics-chart-card analytics-chart-card--expanded">
         <div class="panel__header">
           <div>
             <h3>正常风险大率势数</h3>
@@ -134,7 +134,7 @@
         <VChart v-else class="analytics-chart analytics-chart--small" :option="hourlyRiskOption" autoresize />
       </section>
 
-      <section class="panel analytics-chart-card">
+      <section class="panel analytics-chart-card analytics-chart-card--full">
         <div class="panel__header">
           <div>
             <h3>活动维度趋势</h3>
