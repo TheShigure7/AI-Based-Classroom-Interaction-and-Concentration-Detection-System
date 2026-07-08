@@ -75,6 +75,7 @@ class ClassroomRuntime:
     LOW_ATTENTION_THRESHOLD = 60
     ALERT_EVENT_TYPES = (
         "hand_raised",
+        "head_down",
         "phone_risk",
         "sleeping",
         "talking_risk",
@@ -82,6 +83,9 @@ class ClassroomRuntime:
     )
     ALERT_COOLDOWN_SECONDS = 5.0
     HAND_RAISE_ALERT_COOLDOWN_SECONDS = 10.0
+    HEAD_DOWN_ALERT_COOLDOWN_SECONDS = 30.0
+    PHONE_RISK_ALERT_COOLDOWN_SECONDS = 30.0
+    SLEEPING_ALERT_COOLDOWN_SECONDS = 60.0
     ALERT_LIMIT = 24
 
     def __init__(self) -> None:
@@ -603,49 +607,51 @@ class ClassroomRuntime:
 
         now = time.time()
         for detection in person_detections:
-            event_type = self._pick_alert_event_type(detection)
-            if event_type is None:
+            event_types = self._pick_alert_event_types(detection)
+            if not event_types:
                 continue
 
-            key = (detection.track_id or "unknown", event_type)
-            last_time = self._alert_cooldowns.get(key, 0.0)
-            if now - last_time < self._cooldown_for_event_type(event_type):
-                continue
-
-            self._alert_sequence += 1
-            alert_id = f"{self._session_id}_{self._alert_sequence:04d}"
             snapshot_bytes = self._encode_snapshot(frame, detection.bbox)
             if snapshot_bytes is None:
                 continue
-            timestamp = self._now_iso()
-            snapshot_path = self._write_alert_snapshot(
-                alert_id=alert_id,
-                timestamp=timestamp,
-                snapshot_bytes=snapshot_bytes,
-            )
-            alert = AlertRecord(
-                alert_id=alert_id,
-                timestamp=timestamp,
-                student_id=detection.display_id or detection.track_id or "unknown",
-                event_type=event_type,
-                attention_score=int(detection.attention_score),
-                snapshot_bytes=snapshot_bytes,
-                snapshot_path=str(snapshot_path),
-            )
-            self._alerts.insert(0, alert)
-            self._alerts = self._alerts[: self.ALERT_LIMIT]
-            self._alert_cooldowns[key] = now
-            self._store.save_alert_record(
-                StoredAlertRecord(
-                    alert_id=alert.alert_id,
-                    session_id=self._session_id,
-                    timestamp=alert.timestamp,
-                    student_id=alert.student_id,
-                    event_type=alert.event_type,
-                    attention_score=alert.attention_score,
-                    snapshot_path=alert.snapshot_path,
+
+            for event_type in event_types:
+                key = (detection.track_id or "unknown", event_type)
+                last_time = self._alert_cooldowns.get(key, 0.0)
+                if now - last_time < self._cooldown_for_event_type(event_type):
+                    continue
+
+                self._alert_sequence += 1
+                alert_id = f"{self._session_id}_{self._alert_sequence:04d}"
+                timestamp = self._now_iso()
+                snapshot_path = self._write_alert_snapshot(
+                    alert_id=alert_id,
+                    timestamp=timestamp,
+                    snapshot_bytes=snapshot_bytes,
                 )
-            )
+                alert = AlertRecord(
+                    alert_id=alert_id,
+                    timestamp=timestamp,
+                    student_id=detection.display_id or detection.track_id or "unknown",
+                    event_type=event_type,
+                    attention_score=int(detection.attention_score),
+                    snapshot_bytes=snapshot_bytes,
+                    snapshot_path=str(snapshot_path),
+                )
+                self._alerts.insert(0, alert)
+                self._alerts = self._alerts[: self.ALERT_LIMIT]
+                self._alert_cooldowns[key] = now
+                self._store.save_alert_record(
+                    StoredAlertRecord(
+                        alert_id=alert.alert_id,
+                        session_id=self._session_id,
+                        timestamp=alert.timestamp,
+                        student_id=alert.student_id,
+                        event_type=alert.event_type,
+                        attention_score=alert.attention_score,
+                        snapshot_path=alert.snapshot_path,
+                    )
+                )
 
     def list_records(
         self,
@@ -803,18 +809,24 @@ class ClassroomRuntime:
         return encoded.tobytes() if ok else None
 
     @staticmethod
-    def _pick_alert_event_type(detection: DetectionResult) -> str | None:
+    def _pick_alert_event_types(detection: DetectionResult) -> list[str]:
+        event_types: list[str] = []
         if detection.sleeping:
-            return "sleeping"
+            event_types.append("sleeping")
         if detection.phone_risk:
-            return "phone_risk"
+            event_types.append("phone_risk")
         if detection.talking_risk:
-            return "talking_risk"
+            event_types.append("talking_risk")
+        if detection.head_down:
+            event_types.append("head_down")
         if detection.hand_raised:
-            return "hand_raised"
-        if int(detection.attention_score) < ClassroomRuntime.LOW_ATTENTION_THRESHOLD:
-            return "low_attention"
-        return None
+            event_types.append("hand_raised")
+        if (
+            int(detection.attention_score) < ClassroomRuntime.LOW_ATTENTION_THRESHOLD
+            and not {"sleeping", "phone_risk", "talking_risk", "head_down"} & set(event_types)
+        ):
+            event_types.append("low_attention")
+        return event_types
 
     @staticmethod
     def _update_times(times: list[float], value: float) -> list[float]:
@@ -875,6 +887,12 @@ class ClassroomRuntime:
     def _cooldown_for_event_type(cls, event_type: str) -> float:
         if event_type == "hand_raised":
             return cls.HAND_RAISE_ALERT_COOLDOWN_SECONDS
+        if event_type == "head_down":
+            return cls.HEAD_DOWN_ALERT_COOLDOWN_SECONDS
+        if event_type == "phone_risk":
+            return cls.PHONE_RISK_ALERT_COOLDOWN_SECONDS
+        if event_type == "sleeping":
+            return cls.SLEEPING_ALERT_COOLDOWN_SECONDS
         return cls.ALERT_COOLDOWN_SECONDS
 
     @staticmethod

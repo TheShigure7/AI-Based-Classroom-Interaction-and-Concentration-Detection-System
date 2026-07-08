@@ -34,6 +34,7 @@
             <select v-model="filters.event_type">
               <option value="">全部类型</option>
               <option value="hand_raised">举手</option>
+              <option value="head_down">低头</option>
               <option value="low_attention">低专注</option>
               <option value="phone_risk">手机风险</option>
               <option value="sleeping">睡觉风险</option>
