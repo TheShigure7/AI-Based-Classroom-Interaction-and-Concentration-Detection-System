@@ -138,8 +138,42 @@ select {
 
 .topbar__actions {
   display: flex;
-  align-items: end;
+  align-items: center;
   gap: 12px;
+}
+
+.topbar__close {
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f4f8ff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    background 180ms ease,
+    transform 180ms ease,
+    border-color 180ms ease;
+}
+
+.topbar__close:hover:not(:disabled) {
+  background: rgba(255, 104, 104, 0.18);
+  border-color: rgba(255, 160, 160, 0.28);
+  transform: translateY(-1px);
+}
+
+.topbar__close:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.topbar__close svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
 }
 
 .field {

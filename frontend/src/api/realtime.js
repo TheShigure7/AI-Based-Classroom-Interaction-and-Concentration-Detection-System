@@ -78,6 +78,16 @@ export async function stopSession() {
   return response.json();
 }
 
+export async function exitApplication() {
+  const response = await fetch("/api/v1/app/exit", {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error("exit application failed");
+  }
+  return response.json();
+}
+
 export function createRealtimeSocket({ onMessage, onError, onClose }) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const socket = new WebSocket(`${protocol}//${window.location.host}/ws/classroom/realtime`);

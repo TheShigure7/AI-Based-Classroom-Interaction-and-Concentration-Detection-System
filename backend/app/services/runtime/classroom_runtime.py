@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
 import threading
 import time
 from collections.abc import Generator
@@ -692,6 +695,12 @@ class ClassroomRuntime:
 
         return RecordDeleteResponse(success=True, alert_id=alert_id)
 
+    def request_application_exit(self) -> None:
+        """Terminate the current backend process shortly after replying to the client."""
+        timer = threading.Timer(0.35, self._terminate_backend_processes)
+        timer.daemon = True
+        timer.start()
+
     def get_analytics_overview(
         self,
         *,
@@ -894,6 +903,48 @@ class ClassroomRuntime:
         if event_type == "sleeping":
             return cls.SLEEPING_ALERT_COOLDOWN_SECONDS
         return cls.ALERT_COOLDOWN_SECONDS
+
+    @staticmethod
+    def _terminate_backend_processes() -> None:
+        """Terminate the uvicorn worker and, if present, its reload parent process."""
+        current_pid = os.getpid()
+        parent_pid = os.getppid()
+
+        if parent_pid and parent_pid != current_pid:
+            command_line = ClassroomRuntime._get_process_command_line(parent_pid)
+            if any(
+                marker in command_line.lower()
+                for marker in ("uvicorn", "watchfiles", "app.main:app", "start_backend.ps1")
+            ):
+                try:
+                    os.kill(parent_pid, signal.SIGTERM)
+                except OSError:
+                    pass
+
+        os._exit(0)
+
+    @staticmethod
+    def _get_process_command_line(pid: int) -> str:
+        """Return one process command line for lightweight parent-process checks."""
+        try:
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    f"(Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\").CommandLine",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+        except OSError:
+            return ""
+
+        if result.returncode != 0:
+            return ""
+        return result.stdout.strip()
 
     @staticmethod
     def _resolve_video_source(raw_source: str) -> int | str:
